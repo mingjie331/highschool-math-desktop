@@ -1,0 +1,46 @@
+\documentclass[UTF8,zihao=-4,fontset=windows,oneside,openany]{ctexbook}
+\usepackage[a4paper,left=20mm,right=20mm,top=20mm,bottom=20mm,headheight=15pt,headsep=7mm,footskip=10mm]{geometry}
+\usepackage{amsmath,amssymb,mathtools,bm,graphicx,array,tabularx,booktabs,multirow}
+\usepackage{enumitem,needspace,adjustbox,environ,xcolor,fancyhdr,hyperref}
+\xeCJKsetup{CJKmath=true}
+\hypersetup{unicode=true,colorlinks=false,hidelinks,bookmarksnumbered=true,pdfauthor={},pdfsubject={数学题库}}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{4pt plus 1pt}
+\linespread{1.22}
+\allowdisplaybreaks[2]
+\setlength{\emergencystretch}{3em}
+\tolerance=1800
+\clubpenalty=10000\widowpenalty=10000
+\setlist{nosep,leftmargin=2em}
+\definecolor{muted}{gray}{.36}
+\ctexset{chapter={format=\raggedright\heiti\zihao{2},name={},number={},beforeskip=0pt,afterskip=22pt},section={format=\raggedright\heiti\zihao{4},number={},beforeskip=16pt,afterskip=9pt}}
+\setcounter{secnumdepth}{0}
+\setcounter{tocdepth}{1}
+\pagestyle{fancy}\fancyhf{}
+\fancyhead[L]{\small\nouppercase{\leftmark}}
+\fancyhead[R]{\small\bookvariant}
+\fancyfoot[C]{\thepage}
+\renewcommand{\headrulewidth}{.35pt}
+\fancypagestyle{plain}{\fancyhf{}\fancyfoot[C]{\thepage}\renewcommand{\headrulewidth}{0pt}}
+\newcommand{\qheading}[3]{\par\addvspace{12pt}\Needspace{5\baselineskip}\noindent{\heiti\zihao{4}第 #1 题\quad #2}\par\nopagebreak{\fontsize{9}{12}\selectfont\color{muted}#3\par}\nopagebreak}
+\newlength{\choicemax}\newlength{\choicetest}
+\newcommand{\measurechoice}[1]{\settowidth{\choicetest}{#1}\ifdim\choicetest>\choicemax\setlength{\choicemax}{\choicetest}\fi}
+\newcommand{\choices}[4]{\par\nopagebreak[3]\setlength{\choicemax}{0pt}\measurechoice{A. #1}\measurechoice{B. #2}\measurechoice{C. #3}\measurechoice{D. #4}%
+\ifdim\choicemax<.23\linewidth
+\begin{tabularx}{\linewidth}{@{}XXXX@{}}A. #1&B. #2&C. #3&D. #4\end{tabularx}%
+\else\ifdim\choicemax<.47\linewidth
+\begin{tabularx}{\linewidth}{@{}XX@{}}A. #1&B. #2\\[4pt]C. #3&D. #4\end{tabularx}%
+\else\noindent A. #1\par\nopagebreak B. #2\par\nopagebreak C. #3\par\nopagebreak D. #4\par\fi\fi}
+\newsavebox{\mathbox}
+\NewEnviron{mathblock}{\par\addvspace{4pt}\sbox{\mathbox}{$\displaystyle\BODY$}\ifdim\wd\mathbox>1.15\linewidth\typeout{WIDE-MATH: \currentqid\space width=\the\wd\mathbox}\fi\noindent\makebox[\linewidth][c]{\begin{adjustbox}{max width=\linewidth}\usebox{\mathbox}\end{adjustbox}}\par\addvspace{4pt}}
+\newdimen\workingremaining
+\newcommand{\workingspace}{\par\nobreak\workingremaining=\dimexpr\pagegoal-\pagetotal-\baselineskip\relax\ifdim\workingremaining>.31\textheight\workingremaining=.31\textheight\fi\ifdim\workingremaining>0pt\vspace{\workingremaining}\fi\par}
+\newcommand{\currentqid}{}
+\newcommand{\circlednum}[1]{\ifmmode\text{\textcircled{\scriptsize #1}}\else\textcircled{\scriptsize #1}\fi}
+\newsavebox{\qbodybox}
+\makeatletter
+\NewEnviron{questionbody}{\par\penalty0\setbox\qbodybox=\vbox{\hsize=\linewidth\let\Needspace\@gobble\BODY}\ifdim\dimexpr\ht\qbodybox+\dp\qbodybox\relax<.94\textheight\noindent\box\qbodybox\par\penalty0\else\BODY\par\penalty0\fi}
+\makeatother
+\providecommand{\collectiontitle}{数学题库}
+\providecommand{\collectionmaterial}{}
+\newcommand{\bookcover}[2]{\begin{titlepage}\thispagestyle{empty}\vspace*{24mm}{\heiti\fontsize{28}{40}\selectfont \collectiontitle 数学\par 难题整理\par}\vspace{16mm}{\heiti\zihao{2}#1\par}\vspace{7mm}{\zihao{4}\color{muted}\collectionmaterial\par 按专题与考点分类\par}\vfill{\zihao{4}共 #2 题\par}\vspace{4mm}{\small 题目册与答案解析册采用一致题号\par}\vspace{12mm}\end{titlepage}}
