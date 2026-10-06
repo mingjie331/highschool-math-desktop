@@ -4,7 +4,7 @@ Windows 本地题库桌面应用，使用 FastAPI/SQLite、React、Electron 和 
 
 公开源码自带 **627 道题、87 张配图**。首次启动将种子库复制到本机 `runtime/data`，再迁移至 schema 8；不会修改仓库中的种子库。个人题库、试卷原材料、API 密钥和运行缓存不在仓库中。
 
-## 同学快速上手
+## 快速上手
 
 已验证环境：**Windows x64、Python 3.13 x64、Node.js 24 x64、Git**。先确认 `python --version` 与 `node --version`。首次安装需要访问 PyPI、npm 和 GitHub 下载依赖。
 
