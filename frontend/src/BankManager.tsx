@@ -1,4 +1,5 @@
 import { useRef, useState } from 'react'
+import DialogFrame from './DialogFrame'
 import { api } from './api'
 import type { Bank, Catalog } from './types'
 
@@ -8,8 +9,7 @@ export default function BankManager({ banks, catalog, onClose, onChanged }: {ban
   const [target,setTarget]=useState(banks.find(b=>b.id!==catalog.bank_id)?.id||'');const [ids,setIds]=useState<Set<string>>(new Set());const [semester,setSemester]=useState('gaoyi-first')
   const questions=(catalog.collections.find(c=>c.code===semester)?.topics||[]).flatMap(t=>t.points.flatMap(p=>p.questions.map(q=>({...q,point:p.title}))))
   const operate=async(action:()=>Promise<void>)=>{setBusy(true);setNotice('');try{await action()}catch(e){setNotice(e instanceof Error?e.message:'操作失败')}finally{setBusy(false)}}
-  return <div className="editor-backdrop" role="dialog" aria-modal="true" aria-label="题库管理"><section className="utility-panel bank-manager">
-    <header><h2>题库管理</h2><button className="button ghost" disabled={busy} onClick={onClose}>关闭题库管理</button></header>
+  return <div className="editor-backdrop" role="dialog" aria-modal="true" aria-label="题库管理"><DialogFrame className="utility-panel bank-manager" title="题库管理" closeLabel="关闭题库管理" closeDisabled={busy} onClose={onClose}>
     {notice&&<p role="status">{notice}</p>}
     <div className="bank-list">{banks.map(b=><div key={b.id}><b>{b.name}</b><span>{b.count||0} 题</span><button disabled={busy} className="button ghost compact" onClick={()=>{setEditing(b.id);setName(b.name)}}>重命名</button>{!b.is_system&&<button disabled={busy} className="button ghost compact" onClick={()=>void operate(async()=>{await api.deleteBank(b.id);await onChanged(b.id===catalog.bank_id?'system':undefined);setNotice('空题库已删除')})}>删除空题库</button>}</div>)}</div>
     <label>{editing?'修改题库名称':'新建题库名称'}<input aria-label="题库名称" maxLength={80} value={name} onChange={e=>setName(e.target.value)} placeholder="例如：课内练习、课外补充" /></label>
@@ -20,5 +20,5 @@ export default function BankManager({ banks, catalog, onClose, onChanged }: {ban
     <div className="bank-question-list">{questions.map(q=><label key={q.id}><input type="checkbox" checked={ids.has(q.id)} disabled={busy} onChange={()=>setIds(old=>{const next=new Set(old);next.has(q.id)?next.delete(q.id):next.add(q.id);return next})}/><span>{q.point} · 第 {q.local_number} 题 · {q.preview}</span></label>)}</div>
     <p>移动保留原题，复制后可独立修改；有编辑草稿的题目需先处理草稿。移动的题目将移出原组卷区。</p>
     <div className="form-actions">{(['move','copy'] as const).map(mode=><button key={mode} className="button primary" disabled={busy||!target||!ids.size} onClick={()=>void operate(async()=>{const selection=questions.filter(q=>ids.has(q.id)).map(q=>({id:q.id,revision:q.revision}));const signature=JSON.stringify([catalog.bank_id,target,mode,selection]);if(transferRequest.current?.signature!==signature)transferRequest.current={signature,id:crypto.randomUUID()};await api.transfer(target,mode,selection,transferRequest.current.id);setIds(new Set());await onChanged();setNotice(mode==='move'?'移动完成':'复制完成')})}>{mode==='move'?'移动到目标题库':'复制到目标题库'}</button>)}</div>
-  </section></div>
+  </DialogFrame></div>
 }

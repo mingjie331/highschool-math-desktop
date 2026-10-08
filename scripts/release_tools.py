@@ -63,7 +63,7 @@ def stage_manifests():
     write_json(STAGE/'release.json',{'format_version':1,'version':VERSION,'schema':CONFIG.get('schema_version',8),'artifacts':{'windows':w,'source':s},
           'program_manifest':'高中数学题库/app-files.json','validation':CONFIG['validation_directory'].replace('{version}',VERSION),
           'seed_sha256':CONFIG['seed_sha256'],'protected_directories':CONFIG['protected_directories']})
-    (STAGE/'发行说明.md').write_text(f'# 高中数学题库 {VERSION}\n\n固定使用目录、文档归位、不可覆盖发行与本地更新。schema 9；新增独立题库、分范围导出、源码滚动和 PDF 35 页导入。\n\n更新请保持 Windows ZIP、release.json 和校验清单位于同一目录，双击固定安装目录的“本地更新”。\n',encoding='utf-8')
+    (STAGE/'发行说明.md').write_text(f'# 高中数学题库 {VERSION}\n\n固定使用目录、文档归位、不可覆盖发行与本地更新。schema 9；主窗口按剩余高度布局、学期下拉和固定弹窗关闭栏。\n\n更新请保持 Windows ZIP、release.json 和校验清单位于同一目录，双击固定安装目录的“本地更新”。\n',encoding='utf-8')
 
 def verify(directory):
     directory=Path(directory);release=json.loads((directory/'release.json').read_text('utf-8'))

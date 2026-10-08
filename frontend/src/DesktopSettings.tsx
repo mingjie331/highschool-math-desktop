@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import DialogFrame from './DialogFrame'
 import AISettings from './AISettings'
 export type LatexStatus = { path: string; configured_path: string; available: boolean; message: string }
 
@@ -24,8 +25,7 @@ export default function DesktopSettings({ onClose }: { onClose: () => void }) {
     } catch (err) { setMessage(err instanceof Error ? err.message : '设置失败') }
     finally { setBusy(false) }
   }
-  return <div className="editor-backdrop" role="dialog" aria-modal="true" aria-label="桌面设置"><section className="settings-panel">
-    <header><h2>桌面设置</h2><button className="icon-button" aria-label="关闭设置" onClick={onClose}>×</button></header>
+  return <div className="editor-backdrop" role="dialog" aria-modal="true" aria-label="桌面设置"><DialogFrame className="settings-panel" title="桌面设置" closeLabel="关闭设置" onClose={onClose}>
     {info&&<section className="installation-info" aria-label="程序与数据位置"><h3>程序与数据位置</h3><dl><dt>实际程序版本</dt><dd>{info.version}</dd><dt>当前程序目录</dt><dd>{info.program_directory}</dd><dt>当前数据目录</dt><dd>{info.data_directory}</dd></dl></section>}
     <label>XeLaTeX 路径<input value={path} placeholder="留空则从系统 PATH 自动检测" onChange={e => setPath(e.target.value)} /></label>
     <p>使用电脑已经安装的 LaTeX。可选择 xelatex.exe，并测试中文字体和排版宏包是否齐全。</p>
@@ -34,5 +34,5 @@ export default function DesktopSettings({ onClose }: { onClose: () => void }) {
     <div className="form-actions"><button className="button ghost" disabled={busy} onClick={() => save(false)}>保存设置</button><button className="button primary" disabled={busy} onClick={() => save(true)}>{busy ? '检测中…' : '保存并测试编译'}</button></div>
     <AISettings />
     <footer><button className="button ghost" onClick={() => window.desktop?.openFolder('data')}>打开数据目录</button><button className="button ghost" onClick={() => window.desktop?.openFolder('logs')}>打开日志目录</button></footer>
-  </section></div>
+  </DialogFrame></div>
 }

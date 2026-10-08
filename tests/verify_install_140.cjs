@@ -11,7 +11,7 @@ async function main(){
   const config=await window.desktop.agentStatus()
   return {version:info.version,bank_name:catalog.bank_name,questions:catalog.total,drafts:drafts.length,credentials_configured:config.configured,credential_warning:!!config.credential_warning}
  })
- assert.equal(result.version,'1.4.0');assert.equal(result.bank_name,'系统题库');assert.equal(await page.getByLabel('当前题库',{exact:true}).inputValue(),'system')
+ assert.equal(result.version,process.argv[4]||'1.4.0');assert.equal(result.bank_name,'系统题库');assert.equal(await page.getByLabel('当前题库',{exact:true}).inputValue(),'system')
  fs.mkdirSync(path.dirname(out),{recursive:true});fs.writeFileSync(out,JSON.stringify({passed:true,remote_calls:0,...result},null,2));console.log(JSON.stringify(result))
 }
 main().catch(e=>{console.error(e.message);process.exitCode=1}).finally(async()=>{if(app)await app.close().catch(()=>{})})

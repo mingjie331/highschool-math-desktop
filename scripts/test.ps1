@@ -35,4 +35,6 @@ if ($Electron) {
     if ($LASTEXITCODE) { throw '核对工作台键盘回归失败' }
     node tests/banks_140.e2e.cjs
     if ($LASTEXITCODE) { throw '多题库、源码滚动与 PDF 选择回归失败' }
+    node tests/layout_141.e2e.cjs
+    if ($LASTEXITCODE) { throw '可视区域与弹窗关闭栏回归失败' }
 }

@@ -24,6 +24,7 @@ import { flushSync } from 'react-dom'
 import DesktopSettings from './DesktopSettings'
 import AIWorkbench from './AIWorkbench'
 import BankManager from './BankManager'
+import DialogFrame from './DialogFrame'
 import { agentApi } from './agentApi'
 import type { Bank, ExportScope } from './types'
 import { recognizeQuestion } from './pasteRecognition'
@@ -484,8 +485,7 @@ function Editor({
           </div>
         </footer>
       </section>
-      {pasteOpen && <div className="paste-backdrop" role="dialog" aria-modal="true" aria-label="粘贴识别"><section className="paste-panel">
-        <header><h3>粘贴识别</h3><button className="icon-button" type="button" aria-label="关闭粘贴识别" onClick={() => setPasteOpen(false)}><X size={19} /></button></header>
+      {pasteOpen && <div className="paste-backdrop" role="dialog" aria-modal="true" aria-label="粘贴识别"><DialogFrame className="paste-panel" title="粘贴识别" closeLabel="关闭粘贴识别" onClose={() => setPasteOpen(false)} footer={<><button className="button ghost" type="button" onClick={() => setPasteOpen(false)}>取消</button><button className="button primary" type="button" disabled={!parsedPaste.result} onClick={() => parsedPaste.result && applyPaste(parsedPaste.result)}>确认填入空字段</button></>}>
         <label>粘贴题目文本<textarea value={pasteText} onChange={e => setPasteText(e.target.value)} placeholder={'【题目】\n题干\nA. 选项一\nB. 选项二\nC. 选项三\nD. 选项四\n【答案】\nA\n【解析】\n解析内容'} rows={9} /></label>
         {parsedPaste.error && <p role="alert" className="paste-error">{parsedPaste.error}</p>}
         {parsedPaste.result && <div className="paste-review"><h4>识别结果，请确认</h4>
@@ -497,8 +497,7 @@ function Editor({
           {parsedPaste.result.warnings.map(warning => <p className="paste-warning" key={warning}>{warning}</p>)}
           {pasteConflicts.length > 0 && <p className="paste-warning">已有内容将保留：{pasteConflicts.join('、')}</p>}
         </div>}
-        <footer><button className="button ghost" type="button" onClick={() => setPasteOpen(false)}>取消</button><button className="button primary" type="button" disabled={!parsedPaste.result} onClick={() => parsedPaste.result && applyPaste(parsedPaste.result)}>确认填入空字段</button></footer>
-      </section></div>}
+        </DialogFrame></div>}
     </div>
   )
 }
@@ -866,14 +865,10 @@ export default function App() {
 
       <main className="workspace">
         <aside className={`sidebar ${sidebarOpen ? 'open' : ''}`}>
-          <div className="bank-picker"><label>当前题库<select aria-label="当前题库" value={bankId} disabled={editing!==null||aiOpen||actionBusy||poolBusy} onChange={e=>switchBank(e.target.value)}>{banks.map(b=><option key={b.id} value={b.id}>{b.name}（{b.count||0}题）</option>)}</select></label><button className="button ghost compact" onClick={()=>setBankOpen(true)}>新建 / 管理题库</button></div>
-          <div className="sidebar-heading"><div><span className="eyebrow">题库集合</span><h2>选择学期</h2></div><button className="icon-button mobile-only" onClick={() => setSidebarOpen(false)}><X size={18} /></button></div>
-          <nav className="collection-list" aria-label="题库集合">
-            {collectionList(catalog).map(item => <button key={item.code} aria-current={item.code === selectedCollection ? 'true' : undefined}
-              className={`collection-button ${item.code === selectedCollection ? 'active' : ''}`} onClick={() => chooseCollection(item.code)}>
-              <span>{item.title}</span><em>{item.count}</em><small>{item.material}</small>
-            </button>)}
-          </nav>
+          <div className="bank-picker" aria-label="题库与学期选择">
+            <div className="sidebar-control-row"><label htmlFor="current-bank">题库</label><select id="current-bank" aria-label="当前题库" value={bankId} disabled={editing!==null||aiOpen||actionBusy||poolBusy} onChange={e=>switchBank(e.target.value)}>{banks.map(b=><option key={b.id} value={b.id}>{b.name}（{b.count||0}题）</option>)}</select><button className="button ghost compact" aria-label="新建 / 管理题库" onClick={()=>setBankOpen(true)}>管理</button><button className="icon-button mobile-only" aria-label="关闭题目目录" onClick={()=>setSidebarOpen(false)}><X size={18}/></button></div>
+            <div className="sidebar-control-row"><label htmlFor="current-semester">学期</label><select id="current-semester" aria-label="选择学期" value={selectedCollection} onChange={e=>chooseCollection(e.target.value)}>{collectionList(catalog).map(item=><option key={item.code} value={item.code}>{item.title}（{item.count}题）</option>)}</select></div>
+          </div>
           <div className="tree">
             {search.trim() ? <div className="search-results"><p role="status">{searchStatus}</p>{searchResults.map(item =>
               <div className="pool-row" key={item.id}><input type="checkbox" aria-label={`将搜索结果第 ${item.local_number} 题加入组卷区`} checked={checkedPoolIds.has(item.id)} disabled={poolBusy || item.bank_id!==bankId} onChange={() => togglePool(item.id)} /><button className={`search-result ${selectedId === item.id ? 'active' : ''}`} onClick={() => {if(item.bank_id && item.bank_id!==bankId){switchBank(item.bank_id,{id:item.id,collection:item.collection_code})}else chooseQuestion(item.id,item.topic_code,item.point_code,item.collection_code)}}>
@@ -946,9 +941,8 @@ export default function App() {
       {bankOpen && catalog && <BankManager banks={banks} catalog={catalog} onClose={()=>setBankOpen(false)} onChanged={async id=>{setBanks(await api.banks());if(id&&id!==bankId)switchBank(id);else await loadCatalog()}} />}
       {editing && catalog && <Editor key={editing.key} catalog={catalog} defaultCollection={selectedCollection} initial={editing.initial} draft={editing.draft} onClose={() => setEditing(null)} onSaved={saved}
         onRefreshCatalog={async () => { const refreshed = await api.catalog(); setCatalog(refreshed); return refreshed }} />}
-      {exportOpen && <div className="editor-backdrop" role="dialog" aria-modal="true" aria-label="导出文件"><section className="utility-panel export-dialog"><button className="icon-button utility-close" aria-label="关闭导出文件" onClick={() => setExportOpen(false)}><X /></button>{exportControls}</section></div>}
-      {poolOpen && <div className="editor-backdrop" role="dialog" aria-modal="true" aria-label="组卷区"><section className="utility-panel pool-dialog">
-        <header><div><span className="eyebrow">训练卷</span><h2>组卷区 {pool?.count || 0}/100</h2></div><button className="icon-button" aria-label="关闭组卷区" onClick={() => setPoolOpen(false)}><X /></button></header>
+      {exportOpen && <div className="editor-backdrop" role="dialog" aria-modal="true" aria-label="导出文件"><DialogFrame className="utility-panel export-dialog" title="导出文件" closeLabel="关闭导出文件" onClose={() => setExportOpen(false)}>{exportControls}</DialogFrame></div>}
+      {poolOpen && <div className="editor-backdrop" role="dialog" aria-modal="true" aria-label="组卷区"><DialogFrame className="utility-panel pool-dialog" title={`组卷区 ${pool?.count || 0}/100`} closeLabel="关闭组卷区" onClose={() => setPoolOpen(false)}>
         <p>勾选 1–20 道题生成训练卷；手动卷按加入顺序排列。随机组卷从全部候选题中抽取。</p>
         <div className="pool-items">{pool?.items.map(item => <label className="pool-item" key={item.id}><input type="checkbox" checked={poolSelected.has(item.id)} onChange={() => setPoolSelected(current => { const next = new Set(current); next.has(item.id) ? next.delete(item.id) : next.add(item.id); return next })} /><span><b>{catalog?.collections.find(c => c.code === item.collection_code)?.title} · {item.point_code} · 第 {item.position} 题</b><small>{item.preview}</small></span><button className="button ghost" disabled={poolBusy} onClick={event => { event.preventDefault(); togglePool(item.id) }}>移除</button></label>)}
           {!pool?.count && <p>组卷区暂无题目。可在目录或搜索结果旁勾选题目。</p>}
@@ -958,11 +952,11 @@ export default function App() {
         <div className={`status-card status-${paperStatus?.state || 'idle'}`}><RefreshCw size={18} /><div><b>{paperStatus?.message || '尚未生成训练卷'}</b><small>{paperStatus?.available ? `最近成功：${paperStatus.generated_at} · ${paperStatus.count} 题` : '暂无成功版本'}</small></div></div>
         {paperStatus?.error && <div className="export-error">{paperStatus.error}</div>}
         <div className="pool-files"><button className="download-link" disabled={!paperStatus?.available} onClick={() => paperFile('question', 'open')}>打开题目卷</button><button className="download-link" disabled={!paperStatus?.available} onClick={() => paperFile('solution', 'open')}>打开解析卷</button><button className="download-link" disabled={!paperStatus?.available} onClick={() => paperFile('question', 'save')}>题目卷另存为…</button><button className="download-link" disabled={!paperStatus?.available} onClick={() => paperFile('solution', 'save')}>解析卷另存为…</button><button className="download-link" onClick={() => window.desktop?.openFolder('papers')}>打开训练卷目录</button></div>
-      </section></div>}
-      {drafts && <div className="editor-backdrop" role="dialog" aria-modal="true" aria-label="草稿箱"><section className="utility-panel draft-list"><header><h2>草稿箱</h2><button className="icon-button" aria-label="关闭草稿箱" onClick={() => setDrafts(null)}><X /></button></header>
+      </DialogFrame></div>}
+      {drafts && <div className="editor-backdrop" role="dialog" aria-modal="true" aria-label="草稿箱"><DialogFrame className="utility-panel draft-list" title="草稿箱" closeLabel="关闭草稿箱" onClose={() => setDrafts(null)}>
         <p>草稿不会进入正式题库或导出。共 {drafts.length} 份。</p>
         {drafts.map(draft => <article key={draft.id}><b>{draft.content.form.question_tex.trim().slice(0, 70) || '未命名草稿'}</b><small>{catalog?.collections.find(item => item.code === draft.content.form.collection_code)?.title} · {draft.source_question_id ? '修改已有题目' : '新建题目'} · {new Date(draft.updated_at).toLocaleString()}</small><div className="form-actions"><button className="button primary" onClick={() => openEditor(null, draft)}>继续编辑</button><button className="button ghost" onClick={() => discardFromList(draft)}>丢弃</button></div></article>)}
-      </section></div>}
+      </DialogFrame></div>}
       {aiOpen && catalog && <AIWorkbench catalog={catalog} onClose={() => setAiOpen(false)} onSettings={() => setSettingsOpen(true)} onPublished={async () => { await loadCatalog(); setNotice('AI 候选题已入库，相关集合导出已过期。') }} onOpenQuestion={async id => { const q = await api.question(id); if(q.bank_id&&q.bank_id!==bankRef.current){setAiOpen(false);switchBank(q.bank_id,{id:q.id,collection:q.collection_code},true);return} const updated = await api.catalog(); setCatalog(updated); const collection = updated.collections.find(c => c.code === q.collection_code); const topic = collection?.topics.find(t => t.points.some(p => p.code === q.point_code)); chooseQuestion(id, topic?.code || '', q.point_code, q.collection_code); setAiOpen(false) }} />}
       {settingsOpen && <DesktopSettings onClose={() => setSettingsOpen(false)} />}
     </div>

@@ -25,9 +25,12 @@ async function main(){
   await page.reload();await page.getByRole('button',{name:'LaTeX 源码'}).click()
   const panel=page.getByLabel('源码与题源滚动区')
   for(const [width,height,zoom] of [[1450,940,1],[1000,680,1],[1450,940,1.25],[1450,940,1.5]]){
-    await app.evaluate(({BrowserWindow},v)=>{const w=BrowserWindow.getAllWindows()[0];w.setBounds({width:v[0],height:v[1]});w.webContents.setZoomFactor(v[2])},[width,height,zoom])
-    await panel.focus();await panel.press('Control+End')
-    const measured=await panel.evaluate(node=>{node.scrollTop=node.scrollHeight;const last=node.querySelector('section:last-child');const box=node.getBoundingClientRect();const r=last.getBoundingClientRect();return{top:node.scrollTop,height:node.clientHeight,total:node.scrollHeight,visible:r.bottom<=box.bottom+2,unclipped:last.scrollHeight<=last.clientHeight+2}})
+    const size=await app.evaluate(({BrowserWindow},v)=>{const w=BrowserWindow.getAllWindows()[0];w.setBounds({width:v[0],height:v[1]});w.webContents.setZoomFactor(v[2]);w.webContents.setBackgroundThrottling(false);return w.getContentSize()},[width,height,zoom])
+    await page.waitForFunction(({size,zoom})=>Math.abs(innerWidth-size[0]/zoom)<3&&Math.abs(innerHeight-size[1]/zoom)<3,{size,zoom})
+  await page.waitForFunction(()=>document.querySelector('.viewer-card').getBoundingClientRect().bottom<=innerHeight+2)
+  await panel.focus();await panel.press('Control+End')
+  await wait(async()=>await panel.evaluate(n=>Math.abs(n.scrollHeight-n.clientHeight-n.scrollTop)<3))
+  const measured=await panel.evaluate(node=>{const last=node.querySelector('section:last-child');const box=node.getBoundingClientRect();const r=last.getBoundingClientRect();return{top:node.scrollTop,height:node.clientHeight,total:node.scrollHeight,visible:r.bottom<=box.bottom+2&&r.bottom<=innerHeight+2,unclipped:last.scrollHeight<=last.clientHeight+2}})
     assert.ok(measured.top>0&&measured.visible&&measured.unclipped,JSON.stringify(measured))
   }
   await app.evaluate(({BrowserWindow})=>{const w=BrowserWindow.getAllWindows()[0];w.setBounds({width:1450,height:940});w.webContents.setZoomFactor(1)})

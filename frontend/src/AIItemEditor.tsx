@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import DialogFrame from './DialogFrame'
 import { agentApi } from './agentApi'
 import type { AIImportItem } from './agentTypes'
 import type { Catalog, QuestionPayload, QuestionType } from './types'
@@ -57,8 +58,7 @@ export default function AIItemEditor({ item, catalog, onSaved, onClose }: {
     finally { setBusy(false) }
   }
   const collection = catalog.collections.find(value => value.code === form.collection_code)
-  return <div className="ai-subdialog" role="dialog" aria-modal="true" aria-label="修改 AI 候选题"><section className="ai-edit-panel">
-    <header><h3>修改候选题 {item.item_order}</h3><button className="icon-button" disabled={busy} onClick={() => finish(false)} aria-label="保存关闭候选题">×</button></header>
+  return <div className="ai-subdialog" role="dialog" aria-modal="true" aria-label="修改 AI 候选题"><DialogFrame className="ai-edit-panel" title={`修改候选题 ${item.item_order}`} closeLabel="保存关闭候选题" closeDisabled={busy} onClose={() => {void finish(false)}} footer={<><span role="status">{message}</span><div className="form-actions"><button className="button ghost" disabled={busy} onClick={() => finish(false)}>保存并关闭</button><button className="button primary" disabled={busy} onClick={() => finish(true)}>保存并校验</button></div></>}>
     <fieldset disabled={busy}>
       <label>原题号<input aria-label="原题号" value={originalNumber} onChange={event => setOriginalNumber(event.target.value)} /></label>
       <div className="field-row three"><label>题库集合<select value={form.collection_code} onChange={event => { const c = catalog.collections.find(value => value.code === event.target.value)!; setForm(current => ({ ...current, collection_code: c.code, point_code: c.topics[0]?.points[0]?.code || '' })); setClassificationUncertain(false) }}>{catalog.collections.map(value => <option key={value.code} value={value.code}>{value.title}</option>)}</select></label>
@@ -73,6 +73,6 @@ export default function AIItemEditor({ item, catalog, onSaved, onClose }: {
       <label className="check"><input type="checkbox" checked={answerConflict} onChange={event => setAnswerConflict(event.target.checked)} />原答案与 AI 答案冲突尚未处理</label>
       {!!item.details.figures.length && <label className="check"><input type="checkbox" checked={figuresConfirmed} onChange={event => setFiguresConfirmed(event.target.checked)} />已对照原页核对所有题干图、解析图，裁剪完整</label>}
       {!!item.details.duplicates.length && <label className="check"><input type="checkbox" checked={allowDuplicate} onChange={event => setAllowDuplicate(event.target.checked)} />已核对重复候选，仍保留为新题</label>}
-    </fieldset><footer><span role="status">{message}</span><div className="form-actions"><button className="button ghost" disabled={busy} onClick={() => finish(false)}>保存并关闭</button><button className="button primary" disabled={busy} onClick={() => finish(true)}>保存并校验</button></div></footer>
-  </section></div>
+    </fieldset>
+  </DialogFrame></div>
 }

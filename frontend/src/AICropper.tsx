@@ -1,4 +1,5 @@
 import { useRef, useState } from 'react'
+import DialogFrame from './DialogFrame'
 import type { AIAttachment, AIRegion } from './agentTypes'
 
 export default function AICropper({ attachments, initial, mode, initialField, onApply, onClose }: {
@@ -31,7 +32,7 @@ export default function AICropper({ attachments, initial, mode, initialField, on
     finally { setBusy(false) }
   }
   return <div className="ai-subdialog" role="dialog" aria-modal="true" aria-label="图片裁剪">
-    <section className="ai-crop-panel"><header><h3>{mode === 'figure' ? '裁剪配图' : mode === 'split' ? '拆分题目区域' : '调整题目区域'}</h3><button className="icon-button" disabled={busy} onClick={onClose} aria-label="关闭裁剪">×</button></header>
+    <DialogFrame className="ai-crop-panel" bodyClassName="crop-dialog-body" title={mode === 'split' ? '拆分题目区域' : mode === 'figure' ? '裁剪配图' : '调整题目区域'} closeLabel="关闭裁剪" closeDisabled={busy} onClose={onClose} footer={<><span role="alert">{message}</span><button className="button primary" disabled={busy} onClick={apply}>{busy ? '保存中…' : mode === 'split' ? '拆为多个候选题' : mode === 'figure' ? '裁图并插入' : '保存题目区域'}</button></>}>
       <p>在原图上拖动框选。点击“新增区域”可继续框选；点击已有区域可调整。跨图题可添加多张图的区域。</p>
       <div className="ai-crop-layout"><aside>
         <label>原图<select aria-label="裁剪原图" value={imageId} onChange={event => { setImageId(event.target.value); setSelected(null) }}>{attachments.map(image => <option key={image.id} value={image.id}>{image.filename}{image.document_id ? ` · 第 ${image.page_number} 页` : ""}</option>)}</select></label>
@@ -45,7 +46,7 @@ export default function AICropper({ attachments, initial, mode, initialField, on
           <img ref={imageRef} draggable={false} src={attachments.find(image => image.id === imageId)?.url} alt="待框选原图" />
           {shown && <div className="ai-crop-box" style={{ left: `${shown[0] * 100}%`, top: `${shown[1] * 100}%`, width: `${(shown[2] - shown[0]) * 100}%`, height: `${(shown[3] - shown[1]) * 100}%` }} />}
         </div></div></div>
-      <footer><span role="alert">{message}</span><button className="button primary" disabled={busy} onClick={apply}>{busy ? '保存中…' : mode === 'split' ? '拆为多个候选题' : mode === 'figure' ? '裁图并插入' : '保存题目区域'}</button></footer>
-    </section>
+      
+    </DialogFrame>
   </div>
 }

@@ -1,3 +1,4 @@
+import DialogFrame from './DialogFrame'
 import { useEffect, useRef, useState } from 'react'
 import { agentApi } from './agentApi'
 import type { Catalog } from './types'
@@ -180,6 +181,6 @@ export default function AIImportPanel({ catalog, onClose, onSettings, onPublishe
     </section></div>
     <footer className="ai-footer">候选题保存在本机草稿中。关闭窗口不会取消后台任务；退出程序会停止处理，已识别的草稿保留。</footer>
     {sourceCropping && <AICropper attachments={[sourceCropping]} initial={sourceRegions[sourceCropping.id] || [{ image_id: sourceCropping.id, rect: [0, 0, 1, 1] }]} mode="question" onApply={async regions => { setSourceRegions(current => ({ ...current, [sourceCropping.id]: regions })); setNotice('本次识别范围已调整，完整原图仍保留在本地。') }} onClose={() => setSourceCropping(null)} />}
-    {originalDocument && <div className="ai-subdialog" role="dialog" aria-label="原 PDF 预览"><section className="ai-pdf-panel"><header><h3>{originalDocument.filename}</h3><button className="icon-button" onClick={() => setOriginalDocument(null)} aria-label="关闭原 PDF">×</button></header><PdfViewer src={originalDocument.url} title={originalDocument.filename} /></section></div>}
+    {originalDocument && <div className="ai-subdialog" role="dialog" aria-label="原 PDF 预览"><DialogFrame className="ai-pdf-panel" bodyClassName="pdf-dialog-body" title={originalDocument.filename} closeLabel="关闭原 PDF" onClose={() => setOriginalDocument(null)}><PdfViewer src={originalDocument.url} title={originalDocument.filename} /></DialogFrame></div>}
   </section></div>
 }

@@ -1,3 +1,4 @@
+import DialogFrame from './DialogFrame'
 import { useEffect, useRef, useState } from 'react'
 import { agentApi } from './agentApi'
 import { api, ApiError } from './api'
@@ -123,7 +124,7 @@ export default function AIWorkbench({catalog,onClose,onSettings,onPublished,onOp
         <footer className="ai-publish-footer"><span>已选 {selected.size} 道题 · 入库后仍待核验</span><button className="button primary" disabled={busy||!selected.size} onClick={publish}>加入题库（{selected.size}）</button></footer>
       </div>}</>}
     </div>
-    {deleting&&<div className="ai-subdialog" role="dialog" aria-modal="true" aria-label="删除候选题"><section className="ai-edit-panel"><h3>删除第 {deleting.details.original_number||'未明确题号'} 题？</h3><p>{deleting.form.question_tex.slice(0,180)}</p><p>删除该题候选内容和草稿；保留原图片／PDF、任务摘要、其他候选和正式题库。此操作不能恢复该草稿。</p>{notice&&<p role="alert">{notice}</p>}<div className="form-actions"><button className="button ghost" disabled={busy} onClick={()=>setDeleting(null)}>取消删除</button><button className="button danger" disabled={busy} onClick={deleteCurrent}>确认删除候选题</button></div></section></div>}
-    {preview&&<div className="ai-subdialog" role="dialog" aria-label="待入库预览"><section className="ai-pdf-panel"><header><select aria-label="待入库预览内容" value={preview.view} onChange={e=>previewItem(preview.id,e.target.value as 'question'|'solution')}><option value="question">题目</option><option value="solution">答案解析</option></select><button className="icon-button" aria-label="关闭待入库预览" onClick={()=>setPreview(null)}>×</button></header><PdfViewer src={preview.url} title="待入库题目"/></section></div>}
+    {deleting&&<div className="ai-subdialog" role="dialog" aria-modal="true" aria-label="删除候选题"><DialogFrame className="ai-edit-panel" title={`删除第 ${deleting.details.original_number||'未明确题号'} 题？`} closeLabel="关闭删除确认" closeDisabled={busy} onClose={()=>setDeleting(null)} footer={<div className="form-actions"><button className="button ghost" disabled={busy} onClick={()=>setDeleting(null)}>取消删除</button><button className="button danger" disabled={busy} onClick={deleteCurrent}>确认删除候选题</button></div>}><p>{deleting.form.question_tex.slice(0,180)}</p><p>删除该题候选内容和草稿；保留原图片／PDF、任务摘要、其他候选和正式题库。此操作不能恢复该草稿。</p>{notice&&<p role="alert">{notice}</p>}</DialogFrame></div>}
+    {preview&&<div className="ai-subdialog" role="dialog" aria-label="待入库预览"><DialogFrame className="ai-pdf-panel" bodyClassName="pdf-dialog-body" title="待入库预览" closeLabel="关闭待入库预览" onClose={()=>setPreview(null)} headerActions={<select aria-label="待入库预览内容" value={preview.view} onChange={e=>previewItem(preview.id,e.target.value as 'question'|'solution')}><option value="question">题目</option><option value="solution">答案解析</option></select>}><PdfViewer src={preview.url} title="待入库题目"/></DialogFrame></div>}
   </section></div>
 }
