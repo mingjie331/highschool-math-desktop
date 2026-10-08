@@ -11,9 +11,9 @@ declare global {
       onPrepareClose(handler: () => Promise<void>): () => void
       confirmDiscard(message: string): Promise<boolean>
       chooseLatex(): Promise<string | null>
-      exportFile(kind: 'question' | 'solution', action: 'open' | 'save', collectionCode?: string): Promise<boolean>
-      paperFile(kind: 'question' | 'solution', action: 'open' | 'save'): Promise<boolean>
-      openFolder(kind: 'output' | 'papers' | 'logs' | 'data', collectionCode?: string): Promise<void>
+      exportFile(kind: 'question' | 'solution', action: 'open' | 'save', collectionCode?: string, exportKey?: string): Promise<boolean>
+      paperFile(kind: 'question' | 'solution', action: 'open' | 'save', bankId?: string): Promise<boolean>
+      openFolder(kind: 'output' | 'papers' | 'logs' | 'data', collectionCode?: string, exportKey?: string): Promise<void>
       confirmDelete(message: string): Promise<boolean>
     }
   }

@@ -1,6 +1,9 @@
+export interface Bank { id: string; name: string; is_system: boolean | number; count?: number }
+export interface ExportScope { kind: 'semester' | 'topic' | 'point' | 'selected'; topic_code?: string; point_code?: string; question_ids?: string[] }
 export type QuestionType = 'single' | 'multi' | 'fill' | 'long'
 
 export interface QuestionSummary {
+  bank_id?: string
   id: string
   local_number: number
   type: QuestionType
@@ -25,6 +28,8 @@ export interface Topic {
 }
 
 export interface Catalog {
+  bank_id?: string
+  bank_name?: string
   revision: number
   total: number
   collections: Collection[]
@@ -53,6 +58,8 @@ export interface QuestionSources {
 }
 
 export interface Question {
+  bank_id?: string
+  bank_name?: string
   id: string
   legacy_uid: string | null
   collection_code: string
@@ -72,6 +79,8 @@ export interface Question {
 }
 
 export interface QuestionPayload {
+  bank_id?: string
+  bank_name?: string
   collection_code: string
   point_code: string
   position: number
@@ -88,6 +97,9 @@ export interface QuestionPayload {
 }
 
 export interface ExportStatus {
+  bank_id?: string
+  key?: string
+  scope?: ExportScope
   collection_code: string
   current_count: number
   collection_revision: number | null
@@ -109,6 +121,8 @@ export interface SourceDraft { title: string; originalNumber: string; metadata: 
 export type DraftForm = Omit<QuestionPayload, 'position'> & { position: string | number | null }
 export interface DraftContent { form: DraftForm; source_rows: SourceDraft[] }
 export interface Draft {
+  bank_id?: string
+  bank_name?: string
   id: string
   source_question_id: string | null
   base_revision: number | null
@@ -120,6 +134,8 @@ export interface Draft {
   updated_at: string
 }
 export interface SearchResult {
+  bank_id?: string
+  bank_name?: string
   id: string; local_number: number; type: QuestionType; type_name: string
   collection_code: string; collection_title: string
   topic_code: string; topic_title: string; point_code: string; point_title: string; snippet: string

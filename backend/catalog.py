@@ -24,7 +24,8 @@ DB_PATH = DATA_DIR / 'question_bank.sqlite3'
 SOURCE_BANK = Path(os.environ.get('QUESTION_VIEWER_SOURCE_BANK', RESOURCES / 'seed' / 'book_bank.json'))
 SOURCE_LATEX = RESOURCES / 'seed'
 DEFAULT_COLLECTION = 'gaoyi-first'
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
+SYSTEM_BANK_ID = 'system'
 _INITIALIZE_LOCK = threading.RLock()
 
 
@@ -154,6 +155,10 @@ class CatalogDB:
     def initialize(self) -> None:
         with _INITIALIZE_LOCK:
             version = self._schema_version()  # Read-only, before WAL, mkdir or DDL.
+            if version is not None and version > SCHEMA_VERSION:
+                raise RuntimeError('数据库来自更新版本，请升级程序；未修改数据库。')
+            if version == SCHEMA_VERSION:
+                return
             if version is not None and version < SCHEMA_VERSION:
                 self._migration_backup(version)
             self._initialize()
@@ -165,6 +170,13 @@ class CatalogDB:
         # would otherwise leave a half-migrated user database after an error.
         with self.transaction() as conn:
             columns = {row['name'] for row in conn.execute('PRAGMA table_info(questions)')}
+            if 'bank_id' in columns:
+                for table,name,declaration in [('knowledge_points','order_revision','INTEGER NOT NULL DEFAULT 1'),('drafts','position_mode','TEXT'),('drafts','target_order_revision','INTEGER')]:
+                    if name not in {r['name'] for r in conn.execute('PRAGMA table_info('+table+')')}:conn.execute('ALTER TABLE '+table+' ADD COLUMN '+name+' '+declaration)
+                from .agent_store import initialize_agent_schema
+                initialize_agent_schema(conn)
+                conn.execute("INSERT OR REPLACE INTO metadata VALUES('schema_version',?)",(str(SCHEMA_VERSION),))
+                return
             legacy = bool(columns and 'collection_code' not in columns)
             if legacy:
                 for table in ('questions', 'knowledge_points', 'topics'):
@@ -249,7 +261,13 @@ class CatalogDB:
             initialize_agent_schema(conn)
             if conn.execute('PRAGMA foreign_key_check').fetchone():
                 raise RuntimeError('迁移完整性检查失败，所有迁移更改已回滚')
+            self._migrate_banks(conn)
             conn.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES('schema_version',?)", (str(SCHEMA_VERSION),))
+
+    @staticmethod
+    def _migrate_banks(conn):
+        from .banks import migrate
+        migrate(conn, utc_now())
 
     @staticmethod
     def _migrate_bridge(conn):
@@ -329,163 +347,283 @@ class CatalogDB:
             if not target.exists(): target.parent.mkdir(parents=True, exist_ok=True); shutil.copy2(source, target)
 
     @staticmethod
-    def _get_revision(conn): return int(conn.execute("SELECT value FROM metadata WHERE key='catalog_revision'").fetchone()[0])
+    def _get_revision(conn):
+        return int(conn.execute("SELECT value FROM metadata WHERE key='catalog_revision'").fetchone()[0])
+
     @staticmethod
-    def _bump_revision(conn, *collections):
+    def _bump_revision(conn, *collections, bank_id=SYSTEM_BANK_ID):
+        modern = 'bank_id' in {r['name'] for r in conn.execute('PRAGMA table_info(collections)')}
         for code in set(collections):
-            conn.execute('UPDATE collections SET revision=revision+1 WHERE code=?', (code,))
-        revision = CatalogDB._get_revision(conn)+1; conn.execute("UPDATE metadata SET value=? WHERE key='catalog_revision'", (str(revision),)); return revision
+            if modern:
+                conn.execute('UPDATE collections SET revision=revision+1 WHERE bank_id=? AND code=?', (bank_id, code))
+            else:
+                conn.execute('UPDATE collections SET revision=revision+1 WHERE code=?', (code,))
+        revision = CatalogDB._get_revision(conn) + 1
+        conn.execute("UPDATE metadata SET value=? WHERE key='catalog_revision'", (str(revision),))
+        return revision
 
-    def point_exists(self, point_code: str, collection_code: str = DEFAULT_COLLECTION) -> bool:
-        with closing(self.connect()) as conn: return conn.execute('SELECT 1 FROM knowledge_points WHERE collection_code=? AND code=?', (collection_code,point_code)).fetchone() is not None
-    def point_count(self, point_code, collection_code=DEFAULT_COLLECTION):
-        with closing(self.connect()) as conn: return int(conn.execute('SELECT COUNT(*) FROM questions WHERE collection_code=? AND point_code=?',(collection_code,point_code)).fetchone()[0])
+    @staticmethod
+    def _require_bank(conn, bank_id):
+        row = conn.execute('SELECT * FROM banks WHERE id=?', (bank_id,)).fetchone()
+        if not row:
+            raise ValueError('题库不存在')
+        return row
 
-    def _summary(self, conn, collection_code, topic_code, point_code):
-        rows = conn.execute('SELECT id,position,type,question_tex,revision FROM questions WHERE collection_code=? AND point_code=? ORDER BY position',(collection_code,point_code))
-        return [{'id':r['id'],'local_number':r['position'],'type':r['type'],'type_name':TYPE_NAMES[r['type']],'preview':_plain_preview(r['question_tex']),'revision':r['revision']} for r in rows]
+    def list_banks(self):
+        with closing(self.connect()) as conn:
+            return [{**dict(row), 'count': conn.execute('SELECT COUNT(*) FROM questions WHERE bank_id=?', (row['id'],)).fetchone()[0]}
+                    for row in conn.execute('SELECT * FROM banks ORDER BY is_system DESC,created_at,id')]
 
-    def _collection_catalog(self, conn, collection_code):
-        meta = conn.execute('SELECT * FROM collections WHERE code=?',(collection_code,)).fetchone()
-        topics=[]; total=0
-        for topic in conn.execute('SELECT * FROM topics WHERE collection_code=? ORDER BY sort_order',(collection_code,)):
-            points=[]
-            for point in conn.execute('SELECT * FROM knowledge_points WHERE collection_code=? AND topic_code=? ORDER BY sort_order',(collection_code,topic['code'])):
-                questions=self._summary(conn,collection_code,topic['code'],point['code']); points.append({'code':point['code'],'title':point['title'],'count':len(questions),'order_revision':point['order_revision'],'questions':questions}); total += len(questions)
-            topics.append({'code':topic['code'],'title':topic['title'],'count':sum(p['count'] for p in points),'points':points})
-        return {'code':meta['code'],'title':meta['title'],'material':meta['material'],'count':total,'revision':meta['revision'],'topics':topics}
+    @staticmethod
+    def _bank_name(name):
+        if not isinstance(name, str) or not name.strip() or len(name.strip()) > 80:
+            raise ValueError('题库名称须为 1 至 80 个字符')
+        return name.strip()
 
-    def catalog(self):
+    def create_bank(self, name):
+        from .banks import seed_framework
+        name = self._bank_name(name)
+        with self.transaction() as conn:
+            if conn.execute('SELECT 1 FROM banks WHERE name=?', (name,)).fetchone():
+                raise ValueError('题库名称已存在')
+            bank_id, stamp = str(uuid.uuid4()), utc_now()
+            conn.execute('INSERT INTO banks VALUES(?,?,?,?,?)', (bank_id, name, 0, stamp, stamp))
+            seed_framework(conn, bank_id, COLLECTIONS)
+            self._bump_revision(conn, bank_id=bank_id)
+            return {**dict(self._require_bank(conn, bank_id)), 'count': 0}
+
+    def rename_bank(self, bank_id, name):
+        name = self._bank_name(name)
+        with self.transaction() as conn:
+            self._require_bank(conn, bank_id)
+            if conn.execute('SELECT 1 FROM banks WHERE name=? AND id<>?', (name, bank_id)).fetchone():
+                raise ValueError('题库名称已存在')
+            conn.execute('UPDATE banks SET name=?,updated_at=? WHERE id=?', (name, utc_now(), bank_id))
+            self._bump_revision(conn, bank_id=bank_id)
+            return dict(self._require_bank(conn, bank_id))
+
+    def delete_bank(self, bank_id):
+        with self.transaction() as conn:
+            bank = self._require_bank(conn, bank_id)
+            if bank['is_system']:
+                raise ValueError('系统题库不能删除')
+            for table in ('questions', 'drafts'):
+                if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone():
+                    if conn.execute(f'SELECT 1 FROM {table} WHERE bank_id=? LIMIT 1', (bank_id,)).fetchone():
+                        raise ValueError('题库仍有题目、草稿或 AI 会话，请先处理后再删除')
+            for table in ('ai_tasks','ai_attachments','ai_documents'):
+                if conn.execute('SELECT 1 FROM '+table+' WHERE session_id IN (SELECT id FROM ai_sessions WHERE bank_id=?) LIMIT 1',(bank_id,)).fetchone():
+                    raise ValueError('题库仍有 AI 材料或任务，请先处理后再删除')
+            conn.execute('DELETE FROM ai_messages WHERE session_id IN (SELECT id FROM ai_sessions WHERE bank_id=?)',(bank_id,))
+            conn.execute('DELETE FROM ai_sessions WHERE bank_id=?',(bank_id,))
+            conn.execute('DELETE FROM paper_pool_undo WHERE bank_id=?', (bank_id,))
+            for table in ('knowledge_points', 'topics', 'collections'):
+                conn.execute(f'DELETE FROM {table} WHERE bank_id=?', (bank_id,))
+            conn.execute('DELETE FROM banks WHERE id=?', (bank_id,))
+            self._bump_revision(conn)
+            return {'id': bank_id, 'deleted': True}
+
+    def point_exists(self, point_code, collection_code=DEFAULT_COLLECTION, bank_id=SYSTEM_BANK_ID):
+        with closing(self.connect()) as conn:
+            return conn.execute('SELECT 1 FROM knowledge_points WHERE bank_id=? AND collection_code=? AND code=?',
+                                (bank_id, collection_code, point_code)).fetchone() is not None
+
+    def point_count(self, point_code, collection_code=DEFAULT_COLLECTION, bank_id=SYSTEM_BANK_ID):
+        with closing(self.connect()) as conn:
+            self._require_bank(conn, bank_id)
+            return conn.execute('SELECT COUNT(*) FROM questions WHERE bank_id=? AND collection_code=? AND point_code=?',
+                                (bank_id, collection_code, point_code)).fetchone()[0]
+
+    def _summary(self, conn, collection_code, topic_code, point_code, bank_id=SYSTEM_BANK_ID):
+        rows = conn.execute('SELECT id,bank_id,position,type,question_tex,revision FROM questions WHERE bank_id=? AND collection_code=? AND point_code=? ORDER BY position',
+                            (bank_id, collection_code, point_code))
+        return [{'id': r['id'], 'bank_id': r['bank_id'], 'local_number': r['position'], 'type': r['type'],
+                 'type_name': TYPE_NAMES[r['type']], 'preview': _plain_preview(r['question_tex']), 'revision': r['revision']} for r in rows]
+
+    def _collection_catalog(self, conn, collection_code, bank_id=SYSTEM_BANK_ID):
+        meta = conn.execute('SELECT * FROM collections WHERE bank_id=? AND code=?', (bank_id, collection_code)).fetchone()
+        if not meta:
+            raise ValueError('题库集合不存在')
+        topics = []
+        for topic in conn.execute('SELECT * FROM topics WHERE bank_id=? AND collection_code=? ORDER BY sort_order', (bank_id, collection_code)):
+            points = []
+            for point in conn.execute('SELECT * FROM knowledge_points WHERE bank_id=? AND collection_code=? AND topic_code=? ORDER BY sort_order', (bank_id, collection_code, topic['code'])):
+                questions = self._summary(conn, collection_code, topic['code'], point['code'], bank_id)
+                points.append({'code': point['code'], 'title': point['title'], 'count': len(questions), 'order_revision': point['order_revision'], 'questions': questions})
+            topics.append({'code': topic['code'], 'title': topic['title'], 'count': sum(p['count'] for p in points), 'points': points})
+        return {'bank_id': bank_id, 'code': meta['code'], 'title': meta['title'], 'material': meta['material'],
+                'count': sum(t['count'] for t in topics), 'revision': meta['revision'], 'topics': topics}
+
+    def catalog(self, bank_id=SYSTEM_BANK_ID):
         with closing(self.connect()) as conn:
             conn.execute('BEGIN')
-            collections=[self._collection_catalog(conn,row['code']) for row in conn.execute('SELECT code FROM collections ORDER BY sort_order')]
-            legacy=[]
-            for collection_code in (DEFAULT_COLLECTION,'misc'): legacy.extend(next(c['topics'] for c in collections if c['code']==collection_code))
-            return {'revision':self._get_revision(conn),'total':sum(c['count'] for c in collections),'collections':collections,'semesters':[c for c in collections if c['code']!='misc'],'topics':legacy}
+            bank = dict(self._require_bank(conn, bank_id))
+            collections = [self._collection_catalog(conn, row['code'], bank_id) for row in conn.execute('SELECT code FROM collections WHERE bank_id=? ORDER BY sort_order', (bank_id,))]
+            legacy = [t for c in collections if c['code'] in (DEFAULT_COLLECTION, 'misc') for t in c['topics']]
+            return {'bank_id': bank_id, 'bank_name': bank['name'], 'bank': bank, 'revision': self._get_revision(conn),
+                    'total': sum(c['count'] for c in collections), 'collections': collections,
+                    'semesters': [c for c in collections if c['code'] != 'misc'], 'topics': legacy}
 
     def get_question(self, question_id):
         with closing(self.connect()) as conn:
             return self._question_in(conn, question_id)
+
     def _question_in(self, conn, question_id):
         row = conn.execute('SELECT q.*,p.order_revision FROM questions q JOIN knowledge_points p '
-            'ON p.collection_code=q.collection_code AND p.code=q.point_code WHERE q.id=?', (question_id,)).fetchone()
+                           'ON p.bank_id=q.bank_id AND p.collection_code=q.collection_code AND p.code=q.point_code WHERE q.id=?', (question_id,)).fetchone()
         return self._row_to_question(row) if row else None
+
     @staticmethod
     def _row_to_question(row):
-        return {'id':row['id'],'legacy_uid':row['legacy_uid'],'collection_code':row['collection_code'],'point_code':row['point_code'],'position':row['position'],'type':row['type'],'question_tex':row['question_tex'],'options':json.loads(row['options_json']),'answer_tex':row['answer_tex'],'solution_tex':row['solution_tex'],'sources':json.loads(row['sources_json']),'verified':bool(row['verified']),'revision':row['revision'],'order_revision':row['order_revision'] if 'order_revision' in row.keys() else None,'created_at':row['created_at'],'updated_at':row['updated_at']}
+        return {'id': row['id'], 'bank_id': row['bank_id'] if 'bank_id' in row.keys() else SYSTEM_BANK_ID,
+                'legacy_uid': row['legacy_uid'], 'collection_code': row['collection_code'], 'point_code': row['point_code'],
+                'position': row['position'], 'type': row['type'], 'question_tex': row['question_tex'],
+                'options': json.loads(row['options_json']), 'answer_tex': row['answer_tex'], 'solution_tex': row['solution_tex'],
+                'sources': json.loads(row['sources_json']), 'verified': bool(row['verified']), 'revision': row['revision'],
+                'order_revision': row['order_revision'] if 'order_revision' in row.keys() else None,
+                'created_at': row['created_at'], 'updated_at': row['updated_at']}
 
-    def collection_state(self, collection_code=DEFAULT_COLLECTION):
-        if collection_code not in COLLECTION_MAP:
-            raise ValueError('题库集合不存在')
+    def collection_state(self, collection_code=DEFAULT_COLLECTION, bank_id=SYSTEM_BANK_ID):
         with closing(self.connect()) as conn:
             conn.execute('BEGIN')
-            revision = conn.execute('SELECT revision FROM collections WHERE code=?', (collection_code,)).fetchone()[0]
-            count = conn.execute('SELECT count(*) FROM questions WHERE collection_code=?', (collection_code,)).fetchone()[0]
-            return revision, count
+            self._require_bank(conn, bank_id)
+            row = conn.execute('SELECT revision FROM collections WHERE bank_id=? AND code=?', (bank_id, collection_code)).fetchone()
+            if not row:
+                raise ValueError('题库集合不存在')
+            count = conn.execute('SELECT count(*) FROM questions WHERE bank_id=? AND collection_code=?', (bank_id, collection_code)).fetchone()[0]
+            return row[0], count
 
-    def ordered_snapshot(self, collection_code: str = DEFAULT_COLLECTION):
-        if collection_code not in COLLECTION_MAP:
-            raise ValueError('题库集合不存在')
+    def ordered_snapshot(self, collection_code=DEFAULT_COLLECTION, bank_id=SYSTEM_BANK_ID):
         with closing(self.connect()) as conn:
             conn.execute('BEGIN')
-            revision = conn.execute('SELECT revision FROM collections WHERE code=?', (collection_code,)).fetchone()[0]
+            self._require_bank(conn, bank_id)
+            row = conn.execute('SELECT revision FROM collections WHERE bank_id=? AND code=?', (bank_id, collection_code)).fetchone()
+            if not row:
+                raise ValueError('题库集合不存在')
             rows = conn.execute("""SELECT q.*,p.order_revision FROM questions q JOIN knowledge_points p
-                ON p.collection_code=q.collection_code AND p.code=q.point_code
-                JOIN topics t ON t.collection_code=p.collection_code AND t.code=p.topic_code
-                WHERE q.collection_code=? ORDER BY t.sort_order,p.sort_order,q.position""", (collection_code,)).fetchall()
-            return revision, [self._row_to_question(row) for row in rows]
+                ON p.bank_id=q.bank_id AND p.collection_code=q.collection_code AND p.code=q.point_code
+                JOIN topics t ON t.bank_id=p.bank_id AND t.collection_code=p.collection_code AND t.code=p.topic_code
+                WHERE q.bank_id=? AND q.collection_code=? ORDER BY t.sort_order,p.sort_order,q.position""", (bank_id, collection_code)).fetchall()
+            return row[0], [self._row_to_question(r) for r in rows]
 
-    def collection_snapshot(self, collection_code=DEFAULT_COLLECTION):
+    def collection_snapshot(self, collection_code=DEFAULT_COLLECTION, bank_id=SYSTEM_BANK_ID):
         with ASSET_LOCK:
-            revision, questions = self.ordered_snapshot(collection_code)
-            assets = {ref: asset_path(DATA_DIR, ref).read_bytes()
-                      for question in questions for ref in image_references(question)}
-            return revision, questions, assets, (RESOURCES/'preamble.tex').read_bytes()
+            revision, questions = self.ordered_snapshot(collection_code, bank_id)
+            assets = {ref: asset_path(DATA_DIR, ref).read_bytes() for question in questions for ref in image_references(question)}
+            return revision, questions, assets, (RESOURCES / 'preamble.tex').read_bytes()
 
-    def point_order_revision(self, collection_code, point_code, _conn=None):
+    def point_order_revision(self, collection_code, point_code, _conn=None, bank_id=SYSTEM_BANK_ID):
         with (nullcontext(_conn) if _conn is not None else closing(self.connect())) as conn:
-            row = conn.execute('SELECT order_revision FROM knowledge_points WHERE collection_code=? AND code=?',
-                               (collection_code, point_code)).fetchone()
+            row = conn.execute('SELECT order_revision FROM knowledge_points WHERE bank_id=? AND collection_code=? AND code=?', (bank_id, collection_code, point_code)).fetchone()
             if not row:
                 raise ValueError('考点不存在')
             return int(row[0])
 
     def _check_position(self, conn, data, require=False):
+        current = self.point_order_revision(data['collection_code'], data['point_code'], conn, data.get('bank_id', SYSTEM_BANK_ID))
         expected = data.get('target_order_revision')
-        current = self.point_order_revision(data['collection_code'], data['point_code'], conn)
         if (require and expected is None) or (expected is not None and expected != current):
             raise PositionConflict(current)
 
-    def _bump_order_if_changed(self, conn, collection, point, before):
-        if before != self._ids_for_point(conn, collection, point):
-            conn.execute('UPDATE knowledge_points SET order_revision=order_revision+1 WHERE collection_code=? AND code=?',
-                         (collection, point))
+    def _bump_order_if_changed(self, conn, collection, point, before, bank_id=SYSTEM_BANK_ID):
+        if before != self._ids_for_point(conn, collection, point, bank_id=bank_id):
+            conn.execute('UPDATE knowledge_points SET order_revision=order_revision+1 WHERE bank_id=? AND collection_code=? AND code=?', (bank_id, collection, point))
 
-    def _ids_for_point(self, conn, collection_code, point_code, exclude=None):
-        sql='SELECT id FROM questions WHERE collection_code=? AND point_code=?'; args=[collection_code,point_code]
-        if exclude: sql+=' AND id<>?'; args.append(exclude)
-        return [row[0] for row in conn.execute(sql+' ORDER BY position',args)]
+    def _ids_for_point(self, conn, collection_code, point_code, exclude=None, bank_id=SYSTEM_BANK_ID):
+        sql = 'SELECT id FROM questions WHERE bank_id=? AND collection_code=? AND point_code=?'
+        args = [bank_id, collection_code, point_code]
+        if exclude:
+            sql += ' AND id<>?'
+            args.append(exclude)
+        return [row[0] for row in conn.execute(sql + ' ORDER BY position', args)]
+
     @staticmethod
-    def _resequence(conn, collection_code, point_code, ids):
-        for i,qid in enumerate(ids,1): conn.execute('UPDATE questions SET position=? WHERE id=?',(-i,qid))
-        for i,qid in enumerate(ids,1): conn.execute('UPDATE questions SET collection_code=?,point_code=?,position=? WHERE id=?',(collection_code,point_code,i,qid))
+    def _resequence(conn, collection_code, point_code, ids, bank_id=SYSTEM_BANK_ID):
+        for i, qid in enumerate(ids, 1):
+            conn.execute('UPDATE questions SET position=? WHERE id=? AND bank_id=?', (-i, qid, bank_id))
+        for i, qid in enumerate(ids, 1):
+            conn.execute('UPDATE questions SET collection_code=?,point_code=?,position=? WHERE id=? AND bank_id=?', (collection_code, point_code, i, qid, bank_id))
 
     def create_question(self, data, _conn=None):
-        point=data['point_code']; collection=data.get('collection_code') or legacy_collection(point)
+        bank_id = data.get('bank_id', SYSTEM_BANK_ID)
+        point = data['point_code']
+        collection = data.get('collection_code') or legacy_collection(point)
         with ASSET_LOCK, (nullcontext(_conn) if _conn is not None else self.transaction()) as conn:
-            if not conn.execute('SELECT 1 FROM knowledge_points WHERE collection_code=? AND code=?',(collection,point)).fetchone(): raise ValueError('考点不存在')
+            self._require_bank(conn, bank_id)
+            self._check_position(conn, {**data, 'collection_code': collection, 'bank_id': bank_id})
             for ref in image_references(data):
                 asset_path(DATA_DIR, ref)
-            self._check_position(conn, {**data, 'collection_code': collection})
-            ids=self._ids_for_point(conn,collection,point); position=int(data['position'])
-            before = list(ids)
-            if position<1 or position>len(ids)+1: raise ValueError(f'插入序号必须在 1 到 {len(ids)+1} 之间')
-            qid=str(uuid.uuid4()); now=utc_now()
-            conn.execute('INSERT INTO questions(id,collection_code,point_code,position,type,question_tex,options_json,answer_tex,solution_tex,sources_json,verified,revision,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',(qid,collection,point,-len(ids)-1,data['type'],data['question_tex'],json.dumps(data.get('options',[]),ensure_ascii=False),data.get('answer_tex',''),data['solution_tex'],json.dumps(data.get('sources',{}),ensure_ascii=False),1 if data.get('verified') else 0,1,now,now))
-            ids.insert(position-1,qid); self._resequence(conn,collection,point,ids)
-            self._bump_order_if_changed(conn, collection, point, before)
-            revision=self._bump_revision(conn,collection); return revision,self._question_in(conn, qid)
+            ids = self._ids_for_point(conn, collection, point, bank_id=bank_id)
+            before, position = list(ids), int(data['position'])
+            if not 1 <= position <= len(ids) + 1:
+                raise ValueError(f'插入序号必须在 1 到 {len(ids)+1} 之间')
+            qid, stamp = str(uuid.uuid4()), utc_now()
+            conn.execute('INSERT INTO questions(id,bank_id,collection_code,point_code,position,type,question_tex,options_json,answer_tex,solution_tex,sources_json,verified,revision,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                         (qid, bank_id, collection, point, -len(ids)-1, data['type'], data['question_tex'], json.dumps(data.get('options', []), ensure_ascii=False), data.get('answer_tex', ''), data['solution_tex'], json.dumps(data.get('sources', {}), ensure_ascii=False), int(bool(data.get('verified'))), 1, stamp, stamp))
+            ids.insert(position-1, qid)
+            self._resequence(conn, collection, point, ids, bank_id)
+            self._bump_order_if_changed(conn, collection, point, before, bank_id)
+            revision = self._bump_revision(conn, collection, bank_id=bank_id)
+            return revision, self._question_in(conn, qid)
 
     def update_question(self, question_id, expected_revision, data, _conn=None):
         with ASSET_LOCK, (nullcontext(_conn) if _conn is not None else self.transaction()) as conn:
-            old=conn.execute('SELECT * FROM questions WHERE id=?',(question_id,)).fetchone()
-            if not old: raise KeyError('题目不存在')
-            if old['revision']!=expected_revision: raise RuntimeError('题目已在另一个窗口中修改，请刷新后重试')
-            target=data['point_code']; target_collection=data.get('collection_code') or (old['collection_code'] if conn.execute('SELECT 1 FROM knowledge_points WHERE collection_code=? AND code=?', (old['collection_code'], target)).fetchone() else legacy_collection(target))
-            if not conn.execute('SELECT 1 FROM knowledge_points WHERE collection_code=? AND code=?',(target_collection,target)).fetchone(): raise ValueError('考点不存在')
+            old = conn.execute('SELECT * FROM questions WHERE id=?', (question_id,)).fetchone()
+            if not old:
+                raise KeyError('题目不存在')
+            bank_id = old['bank_id']
+            if data.get('bank_id', bank_id) != bank_id:
+                raise ValueError('跨题库移动请使用批量移动功能')
+            if old['revision'] != expected_revision:
+                raise RuntimeError('题目已在另一个窗口中修改，请刷新后重试')
+            target = data['point_code']
+            collection = data.get('collection_code') or (old['collection_code'] if conn.execute('SELECT 1 FROM knowledge_points WHERE bank_id=? AND collection_code=? AND code=?', (bank_id, old['collection_code'], target)).fetchone() else legacy_collection(target))
+            if not conn.execute('SELECT 1 FROM knowledge_points WHERE bank_id=? AND collection_code=? AND code=?', (bank_id, collection, target)).fetchone():
+                raise ValueError('考点不存在')
             for ref in image_references(data):
                 asset_path(DATA_DIR, ref)
-            same_point = target_collection == old['collection_code'] and target == old['point_code']
-            old_order = self._ids_for_point(conn, old['collection_code'], old['point_code'])
-            target_order = old_order if same_point else self._ids_for_point(conn, target_collection, target)
+            same = collection == old['collection_code'] and target == old['point_code']
+            old_order = self._ids_for_point(conn, old['collection_code'], old['point_code'], bank_id=bank_id)
+            target_order = old_order if same else self._ids_for_point(conn, collection, target, bank_id=bank_id)
             if data.get('position_mode') == 'keep':
-                if not same_point:
+                if not same:
                     raise ValueError('跨考点移动需要确认插入序号')
                 position = old['position']
             else:
-                self._check_position(conn, {**data, 'collection_code': target_collection})
+                self._check_position(conn, {**data, 'collection_code': collection, 'bank_id': bank_id})
                 position = int(data['position'])
-            old_ids=self._ids_for_point(conn,old['collection_code'],old['point_code'],question_id); target_ids=old_ids if target_collection==old['collection_code'] and target==old['point_code'] else self._ids_for_point(conn,target_collection,target)
-            max_position=len(target_ids)+1
-            if position<1 or position>max_position: raise ValueError(f'目标序号必须在 1 到 {max_position} 之间')
-            conn.execute('UPDATE questions SET position=-999999 WHERE id=?',(question_id,))
-            self._resequence(conn,old['collection_code'],old['point_code'],old_ids)
-            target_ids.insert(position-1,question_id); self._resequence(conn,target_collection,target,target_ids)
-            conn.execute('UPDATE questions SET type=?,question_tex=?,options_json=?,answer_tex=?,solution_tex=?,sources_json=?,verified=?,revision=revision+1,updated_at=? WHERE id=?',(data['type'],data['question_tex'],json.dumps(data.get('options',[]),ensure_ascii=False),data.get('answer_tex',''),data['solution_tex'],json.dumps(data.get('sources',{}),ensure_ascii=False),1 if data.get('verified') else 0,utc_now(),question_id))
-            self._bump_order_if_changed(conn, old['collection_code'], old['point_code'], old_order)
-            if not same_point:
-                self._bump_order_if_changed(conn, target_collection, target, target_order)
-            revision=self._bump_revision(conn,old['collection_code'],target_collection); return revision,self._question_in(conn, question_id)
+            old_ids = [i for i in old_order if i != question_id]
+            target_ids = old_ids if same else list(target_order)
+            if not 1 <= position <= len(target_ids) + 1:
+                raise ValueError(f'目标序号必须在 1 到 {len(target_ids)+1} 之间')
+            conn.execute('UPDATE questions SET position=-999999 WHERE id=?', (question_id,))
+            self._resequence(conn, old['collection_code'], old['point_code'], old_ids, bank_id)
+            target_ids.insert(position-1, question_id)
+            self._resequence(conn, collection, target, target_ids, bank_id)
+            conn.execute('UPDATE questions SET type=?,question_tex=?,options_json=?,answer_tex=?,solution_tex=?,sources_json=?,verified=?,revision=revision+1,updated_at=? WHERE id=?',
+                         (data['type'], data['question_tex'], json.dumps(data.get('options', []), ensure_ascii=False), data.get('answer_tex', ''), data['solution_tex'], json.dumps(data.get('sources', {}), ensure_ascii=False), int(bool(data.get('verified'))), utc_now(), question_id))
+            self._bump_order_if_changed(conn, old['collection_code'], old['point_code'], old_order, bank_id)
+            if not same:
+                self._bump_order_if_changed(conn, collection, target, target_order, bank_id)
+            revision = self._bump_revision(conn, old['collection_code'], collection, bank_id=bank_id)
+            return revision, self._question_in(conn, question_id)
 
-    def delete_question(self, question_id, expected_revision):
+    def delete_question(self, question_id, expected_revision, bank_id=None):
         with ASSET_LOCK, self.transaction() as conn:
-            row=conn.execute('SELECT * FROM questions WHERE id=?',(question_id,)).fetchone()
-            if not row: raise KeyError('题目不存在')
-            if row['revision']!=expected_revision: raise RuntimeError('题目已在另一个窗口中修改，请刷新后重试')
-            before = self._ids_for_point(conn, row['collection_code'], row['point_code'])
-            removed=self._row_to_question(row); ids=self._ids_for_point(conn,row['collection_code'],row['point_code'],question_id); conn.execute('DELETE FROM questions WHERE id=?',(question_id,)); self._resequence(conn,row['collection_code'],row['point_code'],ids)
-            self._bump_order_if_changed(conn, row['collection_code'], row['point_code'], before)
-            return self._bump_revision(conn,row['collection_code']),removed
+            row = conn.execute('SELECT * FROM questions WHERE id=?', (question_id,)).fetchone()
+            if not row:
+                raise KeyError('题目不存在')
+            if bank_id is not None and row['bank_id'] != bank_id:
+                raise ValueError('题目不属于当前题库')
+            bank_id = row['bank_id']
+            if row['revision'] != expected_revision:
+                raise RuntimeError('题目已在另一个窗口中修改，请刷新后重试')
+            before = self._ids_for_point(conn, row['collection_code'], row['point_code'], bank_id=bank_id)
+            removed = self._row_to_question(row)
+            conn.execute('DELETE FROM questions WHERE id=?', (question_id,))
+            self._resequence(conn, row['collection_code'], row['point_code'], [i for i in before if i != question_id], bank_id)
+            self._bump_order_if_changed(conn, row['collection_code'], row['point_code'], before, bank_id)
+            return self._bump_revision(conn, row['collection_code'], bank_id=bank_id), removed
 
     def asset_is_referenced(self, latex_path, _conn=None):
         target = asset_path(DATA_DIR, latex_path, require_file=False)
@@ -501,6 +639,45 @@ class CatalogDB:
                         continue
         return False
 
+    def transfer_questions(self, selection, target_bank_id, mode, source_bank_id=SYSTEM_BANK_ID, request_id=None):
+        if mode not in {'move', 'copy'} or not selection or len({q['id'] for q in selection}) != len(selection):
+            raise ValueError('请选择不重复题目并指定移动或复制')
+        signature=json.dumps([source_bank_id,target_bank_id,mode,selection],sort_keys=True)
+        with ASSET_LOCK,self.transaction() as conn:
+            self._require_bank(conn,target_bank_id);self._require_bank(conn,source_bank_id)
+            if source_bank_id==target_bank_id:raise ValueError('请选择不同的目标题库')
+            if request_id:
+                previous=conn.execute('SELECT * FROM bank_transfers WHERE request_id=?',(request_id,)).fetchone()
+                if previous:
+                    if previous['selection_json']!=signature:raise RuntimeError('请求已用于不同操作')
+                    return json.loads(previous['result_json'])
+            rows=[]
+            for item in selection:
+                q=self._question_in(conn,item['id'])
+                if not q or q['bank_id']!=source_bank_id:raise ValueError('题目不属于当前题库')
+                if q['revision']!=item['revision']:raise RuntimeError('题目已变化，请刷新后重试')
+                if conn.execute('SELECT 1 FROM drafts WHERE source_question_id=?',(q['id'],)).fetchone():raise RuntimeError('所选题目有编辑草稿，请先保存或处理草稿')
+                rows.append(q)
+            order={q['id']:i for i,q in enumerate(self.ordered_snapshot_all(source_bank_id))}
+            rows.sort(key=lambda q:order[q['id']]);result=[]
+            for q in rows:
+                target={**q,'bank_id':target_bank_id,'position':len(self._ids_for_point(conn,q['collection_code'],q['point_code'],bank_id=target_bank_id))+1,'position_mode':'move','target_order_revision':None}
+                # Content and immutable assets can be copied without recompilation.
+                _,copied=self.create_question(target,conn)
+                if mode=='move':
+                    old_order=self._ids_for_point(conn,q['collection_code'],q['point_code'],bank_id=source_bank_id)
+                    conn.execute('DELETE FROM paper_pool WHERE question_id=?',(q['id'],))
+                    conn.execute('DELETE FROM questions WHERE id=?',(q['id'],))
+                    conn.execute('UPDATE questions SET id=?,legacy_uid=?,revision=?,created_at=? WHERE id=?',(q['id'],q['legacy_uid'],q['revision']+1,q['created_at'],copied['id']))
+                    self._resequence(conn,q['collection_code'],q['point_code'],[i for i in old_order if i!=q['id']],source_bank_id)
+                    self._bump_order_if_changed(conn,q['collection_code'],q['point_code'],old_order,source_bank_id)
+                    self._bump_revision(conn,q['collection_code'],bank_id=source_bank_id)
+                    copied=self._question_in(conn,q['id'])
+                result.append({'source_id':q['id'],'id':copied['id'],'bank_id':target_bank_id})
+            value={'items':result,'mode':mode,'source_bank_id':source_bank_id,'target_bank_id':target_bank_id}
+            if request_id:conn.execute('INSERT INTO bank_transfers VALUES(?,?,?,?)',(request_id,signature,json.dumps(value,ensure_ascii=False),utc_now()))
+            return value
+
     def cleanup_assets(self, removed):
         with ASSET_LOCK, self.transaction() as conn:
             for ref in image_references(removed):
@@ -512,15 +689,15 @@ class CatalogDB:
     @staticmethod
     def _draft(row):
         result=dict(row); result['content']=json.loads(result.pop('content_json')); return result
-    def list_drafts(self):
-        with closing(self.connect()) as conn: return [self._draft(r) for r in conn.execute('SELECT * FROM drafts ORDER BY updated_at DESC,id')]
+    def list_drafts(self, bank_id=SYSTEM_BANK_ID):
+        with closing(self.connect()) as conn: return [self._draft(r) for r in conn.execute('SELECT * FROM drafts WHERE bank_id=? ORDER BY updated_at DESC,id', (bank_id,))]
     def get_draft(self,draft_id):
         with closing(self.connect()) as conn:
             row=conn.execute('SELECT * FROM drafts WHERE id=?',(draft_id,)).fetchone()
             if not row: raise KeyError('草稿不存在或已发布/丢弃')
             return self._draft(row)
     def save_draft(self, draft_id, expected, source_id, base_revision, content,
-                   position_mode=None, target_order_revision=None):
+                   position_mode=None, target_order_revision=None, bank_id=None):
         if position_mode not in (None, 'keep', 'move'):
             raise ValueError('位置保存方式无效')
         if target_order_revision is not None and (not isinstance(target_order_revision, int) or target_order_revision < 1):
@@ -530,8 +707,13 @@ class CatalogDB:
             if conn.execute('SELECT 1 FROM closed_drafts WHERE id=?', (draft_id,)).fetchone():
                 raise RuntimeError('草稿已发布或丢弃，请重新打开编辑器')
             old = conn.execute('SELECT * FROM drafts WHERE id=?', (draft_id,)).fetchone()
-            original = conn.execute('SELECT collection_code FROM questions WHERE id=?', (source_id,)).fetchone()
+            original = conn.execute('SELECT collection_code,bank_id FROM questions WHERE id=?', (source_id,)).fetchone()
             form = content['form']
+            resolved_bank = bank_id or form.get('bank_id') or (old['bank_id'] if old else (original['bank_id'] if original else SYSTEM_BANK_ID))
+            self._require_bank(conn, resolved_bank)
+            if (old and old['bank_id'] != resolved_bank) or (original and original['bank_id'] != resolved_bank):
+                raise ValueError('草稿或原题不属于当前题库')
+            form['bank_id'] = resolved_bank
             if not form.get('collection_code'):
                 point = form.get('point_code', '1.1')
                 # Legacy clients omit scope. Keep the draft's target first, then
@@ -539,7 +721,7 @@ class CatalogDB:
                 prior_scope = json.loads(old['content_json'])['form'].get('collection_code') if old else None
                 candidates = [prior_scope, original[0] if original else None]
                 form['collection_code'] = next((scope for scope in candidates if scope and conn.execute(
-                    'SELECT 1 FROM knowledge_points WHERE collection_code=? AND code=?', (scope, point)
+                    'SELECT 1 FROM knowledge_points WHERE bank_id=? AND collection_code=? AND code=?', (resolved_bank, scope, point)
                 ).fetchone()), legacy_collection(point))
             if form['collection_code'] not in COLLECTION_MAP:
                 raise ValueError('草稿集合不存在')
@@ -562,11 +744,11 @@ class CatalogDB:
                 asset_path(DATA_DIR, ref, require_file=False)
             now = datetime.now(timezone.utc).isoformat(timespec='microseconds')
             source_collection = old['source_collection_code'] if old else (original[0] if original else form['collection_code'])
-            conn.execute("""INSERT INTO drafts(id,source_question_id,source_collection_code,base_revision,content_json,revision,created_at,updated_at,position_mode,target_order_revision)
-                VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET content_json=excluded.content_json,
+            conn.execute("""INSERT INTO drafts(id,bank_id,source_question_id,source_collection_code,base_revision,content_json,revision,created_at,updated_at,position_mode,target_order_revision)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET content_json=excluded.content_json,
                 revision=excluded.revision,updated_at=excluded.updated_at,position_mode=excluded.position_mode,
                 target_order_revision=excluded.target_order_revision""",
-                (draft_id, source_id, source_collection, base_revision, encoded, expected+1, now, now, position_mode, target_order_revision))
+                (draft_id, resolved_bank, source_id, source_collection, base_revision, encoded, expected+1, now, now, position_mode, target_order_revision))
             return self._draft(conn.execute('SELECT * FROM drafts WHERE id=?', (draft_id,)).fetchone())
 
     def discard_draft(self,draft_id,expected):
@@ -592,6 +774,9 @@ class CatalogDB:
                 return result,False
             row=conn.execute('SELECT * FROM drafts WHERE id=?',(draft_id,)).fetchone()
             if not row or row['revision']!=expected: raise RuntimeError('编译期间草稿已变化，请重新校验并保存')
+            if data.get('bank_id', row['bank_id']) != row['bank_id']:
+                raise ValueError('草稿不属于当前题库')
+            data['bank_id'] = row['bank_id']
             source_collection=row['source_collection_code'] or data.get('collection_code',DEFAULT_COLLECTION)
             affected = {data.get('collection_code') or source_collection}
             if row['source_question_id'] and not as_new:
@@ -607,21 +792,25 @@ class CatalogDB:
             else:
                 data['collection_code']=data.get('collection_code') or source_collection
                 if as_new and row['position_mode'] in (None, 'keep'):
-                    data['position'] = len(self._ids_for_point(conn, data['collection_code'], data['point_code'])) + 1
+                    data['position'] = len(self._ids_for_point(conn, data['collection_code'], data['point_code'], bank_id=data['bank_id'])) + 1
                 if row['position_mode'] == 'move':
                     data['target_order_revision'] = row['target_order_revision']
                     self._check_position(conn, data, require=True)
                 revision,question=self.create_question(data,conn)
             result={'catalog_revision':revision,'question':question,'as_new':as_new,'affected_collections': sorted(affected)}; conn.execute('INSERT INTO closed_drafts VALUES(?,?,?)',(draft_id,expected,json.dumps(result,ensure_ascii=False))); conn.execute('DELETE FROM drafts WHERE id=?',(draft_id,)); return result,True
 
-    def search(self,query,collection_code=None):
+    def search(self,query,collection_code=None,bank_id=SYSTEM_BANK_ID):
         if collection_code is not None and collection_code not in COLLECTION_MAP:
             raise ValueError('题库集合不存在')
         needle=query.strip().casefold()
         if not needle:return []
         point_titles={(c,pc):(tt,pt) for c,_,_,_,topics in COLLECTIONS for tc,tt,points in topics for pc,pt in points}
         results=[]
-        for q in (self.ordered_snapshot(collection_code)[1] if collection_code else self.ordered_snapshot_all()):
+        questions = self.ordered_snapshot_all(bank_id)
+        if collection_code:
+            questions = [q for q in questions if q['collection_code'] == collection_code]
+        names = {b['id']: b['name'] for b in self.list_banks()}
+        for q in questions:
             fields=[q['question_tex'],*q['options'],q['id'],q['legacy_uid'] or '',str(q['position']),TYPE_NAMES[q['type']]]
             origins=q['sources'].get('origins',[]) if isinstance(q['sources'],dict) else []
             for origin in origins:
@@ -629,60 +818,63 @@ class CatalogDB:
             matched=next((text for text in fields if needle in text.casefold()),None)
             if matched is None:continue
             index=matched.casefold().index(needle); start=max(0,index-30); ct,pt=point_titles[(q['collection_code'],q['point_code'])]
-            meta=COLLECTION_MAP[q['collection_code']]; results.append({'id':q['id'],'local_number':q['position'],'type':q['type'],'type_name':TYPE_NAMES[q['type']],'collection_code':q['collection_code'],'collection_title':meta[1],'topic_code':next(tc for tc,_,ps in meta[4] if any(pc==q['point_code'] for pc,_ in ps)),'topic_title':ct,'point_code':q['point_code'],'point_title':pt,'snippet':('…' if start else '')+matched[start:index+len(needle)+70]})
+            meta=COLLECTION_MAP[q['collection_code']]; results.append({'id':q['id'],'bank_id':q['bank_id'],'bank_name':names[q['bank_id']],'local_number':q['position'],'type':q['type'],'type_name':TYPE_NAMES[q['type']],'collection_code':q['collection_code'],'collection_title':meta[1],'topic_code':next(tc for tc,_,ps in meta[4] if any(pc==q['point_code'] for pc,_ in ps)),'topic_title':ct,'point_code':q['point_code'],'point_title':pt,'snippet':('…' if start else '')+matched[start:index+len(needle)+70]})
         return results
-    def ordered_snapshot_all(self):
+    def ordered_snapshot_all(self, bank_id=SYSTEM_BANK_ID):
+        banks = [bank_id] if bank_id is not None else [b['id'] for b in self.list_banks()]
         rows=[]
-        for code,_,_,_,_ in COLLECTIONS: rows.extend(self.ordered_snapshot(code)[1])
+        for bank in banks:
+            for code,_,_,_,_ in COLLECTIONS:
+                rows.extend(self.ordered_snapshot(code,bank)[1])
         return rows
 
     @staticmethod
-    def _pool_items(conn):
+    def _pool_items(conn, bank_id=SYSTEM_BANK_ID):
         rows = conn.execute('''SELECT p.added_order,q.*,k.order_revision FROM paper_pool p JOIN questions q ON q.id=p.question_id
-            JOIN knowledge_points k ON k.collection_code=q.collection_code AND k.code=q.point_code
-            ORDER BY p.added_order''').fetchall()
+            JOIN knowledge_points k ON k.bank_id=q.bank_id AND k.collection_code=q.collection_code AND k.code=q.point_code
+            WHERE p.bank_id=? AND q.bank_id=p.bank_id ORDER BY p.added_order''', (bank_id,)).fetchall()
         return [{**CatalogDB._row_to_question(row), 'added_order': row['added_order'],
                  'preview': _plain_preview(row['question_tex'])} for row in rows]
 
-    def pool_items(self):
+    def pool_items(self, bank_id=SYSTEM_BANK_ID):
         with closing(self.connect()) as conn:
-            return self._pool_items(conn)
+            return self._pool_items(conn, bank_id)
 
-    def pool_add(self, question_id):
+    def pool_add(self, question_id, bank_id=SYSTEM_BANK_ID):
         with self.transaction() as conn:
-            if not conn.execute('SELECT 1 FROM questions WHERE id=?', (question_id,)).fetchone():
+            if not conn.execute('SELECT 1 FROM questions WHERE id=? AND bank_id=?', (question_id, bank_id)).fetchone():
                 raise KeyError('题目不存在')
             if not conn.execute('SELECT 1 FROM paper_pool WHERE question_id=?', (question_id,)).fetchone():
-                if conn.execute('SELECT COUNT(*) FROM paper_pool').fetchone()[0] >= 100:
+                if conn.execute('SELECT COUNT(*) FROM paper_pool WHERE bank_id=?', (bank_id,)).fetchone()[0] >= 100:
                     raise ValueError('组卷区最多保存 100 道题目')
-                conn.execute('INSERT INTO paper_pool(question_id) VALUES(?)', (question_id,))
-            return self._pool_items(conn)
+                conn.execute('INSERT INTO paper_pool(bank_id,question_id) VALUES(?,?)', (bank_id,question_id))
+            return self._pool_items(conn, bank_id)
 
-    def pool_remove(self, question_ids):
+    def pool_remove(self, question_ids, bank_id=SYSTEM_BANK_ID):
         ids = list(question_ids)
         if not ids or len(ids) != len(set(ids)):
             raise ValueError('请选择不重复的组卷区题目')
         with self.transaction() as conn:
-            rows = conn.execute('SELECT added_order,question_id FROM paper_pool ORDER BY added_order').fetchall()
+            rows = conn.execute('SELECT added_order,question_id FROM paper_pool WHERE bank_id=? ORDER BY added_order', (bank_id,)).fetchall()
             members = {row['question_id']: row['added_order'] for row in rows}
             if any(qid not in members for qid in ids):
                 raise ValueError('所选题目不在组卷区')
             removed = [{'question_id': qid, 'added_order': members[qid]} for qid in ids]
             for qid in ids:
                 conn.execute('DELETE FROM paper_pool WHERE question_id=?', (qid,))
-            conn.execute('INSERT INTO paper_pool_undo(singleton,removed_json,created_at) VALUES(1,?,?) '
-                         'ON CONFLICT(singleton) DO UPDATE SET removed_json=excluded.removed_json,created_at=excluded.created_at',
-                         (json.dumps(removed), utc_now()))
-            return self._pool_items(conn)
+            conn.execute('INSERT INTO paper_pool_undo(bank_id,singleton,removed_json,created_at) VALUES(?,1,?,?) '
+                         'ON CONFLICT(bank_id) DO UPDATE SET removed_json=excluded.removed_json,created_at=excluded.created_at',
+                         (bank_id, json.dumps(removed), utc_now()))
+            return self._pool_items(conn, bank_id)
 
-    def pool_undo(self):
+    def pool_undo(self, bank_id=SYSTEM_BANK_ID):
         with self.transaction() as conn:
-            row = conn.execute('SELECT removed_json FROM paper_pool_undo WHERE singleton=1').fetchone()
+            row = conn.execute('SELECT removed_json FROM paper_pool_undo WHERE bank_id=?', (bank_id,)).fetchone()
             if not row:
                 raise ValueError('没有可撤销的移除操作')
             removed = json.loads(row[0])
-            available = {r[0] for r in conn.execute('SELECT id FROM questions')}
-            current = {r[0] for r in conn.execute('SELECT question_id FROM paper_pool')}
+            available = {r[0] for r in conn.execute('SELECT id FROM questions WHERE bank_id=?', (bank_id,))}
+            current = {r[0] for r in conn.execute('SELECT question_id FROM paper_pool WHERE bank_id=?', (bank_id,))}
             restore = [item for item in removed if item['question_id'] in available]
             new_count = sum(item['question_id'] not in current for item in restore)
             if len(current) + new_count > 100:
@@ -692,31 +884,31 @@ class CatalogDB:
                     conn.execute('UPDATE paper_pool SET added_order=? WHERE question_id=?',
                                  (item['added_order'], item['question_id']))
                 else:
-                    conn.execute('INSERT INTO paper_pool(added_order,question_id) VALUES(?,?)',
-                                 (item['added_order'], item['question_id']))
-            conn.execute('DELETE FROM paper_pool_undo WHERE singleton=1')
-            return self._pool_items(conn)
+                    conn.execute('INSERT INTO paper_pool(bank_id,added_order,question_id) VALUES(?,?,?)',
+                                 (bank_id, item['added_order'], item['question_id']))
+            conn.execute('DELETE FROM paper_pool_undo WHERE bank_id=?', (bank_id,))
+            return self._pool_items(conn, bank_id)
 
-    def pool_state(self):
+    def pool_state(self, bank_id=SYSTEM_BANK_ID):
         with closing(self.connect()) as conn:
-            items = self._pool_items(conn)
-            undo = conn.execute('SELECT removed_json FROM paper_pool_undo WHERE singleton=1').fetchone()
+            items = self._pool_items(conn, bank_id)
+            undo = conn.execute('SELECT removed_json FROM paper_pool_undo WHERE bank_id=?', (bank_id,)).fetchone()
             return {'items': items, 'count': len(items), 'limit': 100,
                     'can_undo': bool(undo), 'undo_count': len(json.loads(undo[0])) if undo else 0}
 
-    def paper_snapshot(self, mode, question_ids=None, count=None):
+    def paper_snapshot(self, mode, question_ids=None, count=None, bank_id=SYSTEM_BANK_ID):
         with ASSET_LOCK:
-            return self._paper_snapshot(mode, question_ids, count)
+            return self._paper_snapshot(mode, question_ids, count, bank_id)
 
-    def paper_render_snapshot(self, mode, question_ids=None, count=None):
+    def paper_render_snapshot(self, mode, question_ids=None, count=None, bank_id=SYSTEM_BANK_ID):
         with ASSET_LOCK:
-            snapshot, assets = self._paper_snapshot(mode, question_ids, count)
+            snapshot, assets = self._paper_snapshot(mode, question_ids, count, bank_id)
             return snapshot, assets, (RESOURCES/'preamble.tex').read_bytes()
 
-    def _paper_snapshot(self, mode, question_ids=None, count=None):
+    def _paper_snapshot(self, mode, question_ids=None, count=None, bank_id=SYSTEM_BANK_ID):
         with closing(self.connect()) as conn:
             conn.execute('BEGIN')
-            items = self._pool_items(conn)
+            items = self._pool_items(conn, bank_id)
             members = {item['id']: item for item in items}
             if mode == 'manual':
                 ids = list(question_ids or [])
@@ -734,7 +926,7 @@ class CatalogDB:
                 raise ValueError('未知组卷方式')
             points = {(row['collection_code'], row['code']): row for row in conn.execute('''
                 SELECT p.collection_code,p.code,p.title AS point_title,t.title AS topic_title
-                FROM knowledge_points p JOIN topics t ON t.collection_code=p.collection_code AND t.code=p.topic_code''')}
+                FROM knowledge_points p JOIN topics t ON t.bank_id=p.bank_id AND t.collection_code=p.collection_code AND t.code=p.topic_code WHERE p.bank_id=?''', (bank_id,))}
             snapshot = []
             assets = {}
             for item in selected:

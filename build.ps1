@@ -20,7 +20,7 @@ npm.cmd --prefix frontend run build
 if ($LASTEXITCODE) { throw '前端构建失败' }
 & $BuildPython -m unittest discover -s tests -p 'test_*.py'
 if ($LASTEXITCODE) { throw '后台回归测试失败' }
-node --experimental-strip-types --test tests/frontend.test.ts
+node --experimental-strip-types --test tests/frontend.test.ts tests/page_selection.test.ts
 if ($LASTEXITCODE) { throw '前端逻辑回归测试失败' }
 node --test tests/secrets.test.cjs tests/source_preferences.test.cjs
 if ($LASTEXITCODE) { throw '密钥存储回归测试失败' }

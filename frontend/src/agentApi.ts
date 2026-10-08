@@ -2,8 +2,10 @@ import { jsonRequest } from './api'
 import type { AIConfigStatus, AIConversation, AIImportItem, AIImportTask, AIRegion, AIAttachment, AIDocument, AIWorkbenchData, AITaskProgress } from './agentTypes'
 
 const post = <T>(url: string, body: object = {}) => jsonRequest<T>(url, { method: 'POST', body: JSON.stringify(body) })
+let bankId='system'
 export const agentApi = {
-  workbench: (filters: { task_id?: string; source?: string; review_stage?: string; offset?: number; limit?: number } = {}) => jsonRequest<AIWorkbenchData>('/api/agent/workbench?' + new URLSearchParams(Object.entries(filters).filter(([, v]) => v !== undefined && v !== '').map(([k, v]) => [k, String(v)]))),
+  setBank: (id:string) => {bankId=id},
+  workbench: (filters: { bank_id?: string; task_id?: string; source?: string; review_stage?: string; offset?: number; limit?: number } = {}) => jsonRequest<AIWorkbenchData>('/api/agent/workbench?' + new URLSearchParams(Object.entries({bank_id:bankId,...filters}).filter(([, v]) => v !== undefined && v !== '').map(([k, v]) => [k, String(v)]))),
   deleteCandidate:(item:AIImportItem,request_id:string)=>jsonRequest<{id:string;deleted:boolean}>(`/api/agent/items/${item.id}`,{method:'DELETE',body:JSON.stringify({revision:item.revision,draft_revision:item.draft_revision,request_id})}),
   materials: (id: string) => jsonRequest<AIAttachment[]>(`/api/agent/items/${id}/materials`),
   confirmReview: (item: AIImportItem, request_id: string) => post<AIImportItem>(`/api/agent/items/${item.id}/confirm-review`, { revision: item.revision, request_id }),
@@ -11,8 +13,8 @@ export const agentApi = {
   publishBatch: (items: { id: string; revision: number }[], request_id: string) => post<{ items: { item_id: string; task_id: string; question_id: string }[] }>('/api/agent/publish', { request_id, items }),
   config: () => jsonRequest<AIConfigStatus>('/api/agent/config'),
   test: () => post<{ ok: boolean; message: string }>('/api/agent/config/test'),
-  sessions: () => jsonRequest<AIConversation[]>('/api/agent/sessions'),
-  createSession: () => post<AIConversation>('/api/agent/sessions'),
+  sessions: () => jsonRequest<AIConversation[]>('/api/agent/sessions?bank_id='+encodeURIComponent(bankId)),
+  createSession: () => post<AIConversation>('/api/agent/sessions',{bank_id:bankId}),
   session: (id: string) => jsonRequest<AIConversation>(`/api/agent/sessions/${id}?compact=true`),
   task: (id: string) => jsonRequest<AITaskProgress>(`/api/agent/imports/${id}?compact=true`),
   start: (session_id: string, attachment_ids: string[], instruction: string, source_title: string, request_id: string, input_regions?: AIRegion[], selection?: { question_numbers: string; target_document_id?: string; document_pairs?: { question_document_id: string; answer_document_id: string }[] }) =>

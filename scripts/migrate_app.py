@@ -44,7 +44,9 @@ def migrate(source,target,backup_root):
     for file in stage.rglob('*'):
         if file.is_file() and file.relative_to(stage).parts[0] not in PROTECTED and (len(file.relative_to(stage).parts)==1 or file.relative_to(stage).parts[0] in {'resources','locales','docs','tools'}):
             program.append({'path':file.relative_to(stage).as_posix(),'bytes':file.stat().st_size,'sha256':sha(file)})
-    (stage/'app-files.json').write_text(json.dumps({'format_version':1,'version':before['version'],'schema':8,'product':'高中数学题库','files':program},ensure_ascii=False,indent=2),encoding='utf-8')
+    source_manifest=source/'app-files.json'
+    program_schema=json.loads(source_manifest.read_text('utf-8')).get('schema',8) if source_manifest.exists() else int((before.get('database') or {}).get('schema') or 8)
+    (stage/'app-files.json').write_text(json.dumps({'format_version':1,'version':before['version'],'schema':program_schema,'product':'高中数学题库','files':program},ensure_ascii=False,indent=2),encoding='utf-8')
     (stage/'.cache/installation.json').write_text(json.dumps({'backup_root':str(backup_root),'migrated_from':str(source),'migration_backup':str(backup)},ensure_ascii=False,indent=2),encoding='utf-8')
     # Enable only after every pre-launch content/configuration check passed.
     if target.exists():raise FileExistsError('Target appeared during migration; verified staging retained for recovery')

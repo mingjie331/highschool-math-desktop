@@ -61,10 +61,10 @@ def stage(manager,item,worker=False):
     return 'review'
 
 
-def queue(manager,task_id=None,source=None,review_stage=None,offset=0,limit=100):
+def queue(manager,task_id=None,source=None,review_stage=None,offset=0,limit=100,bank_id="system"):
     # No attachment images, session history or full candidate content is returned.
     with closing(manager.db.connect()) as conn:
-        tasks=[dict(r) for r in conn.execute("SELECT id,session_id,message,state,error,created_at,json_extract(payload_json,'$.attachment_ids') AS attachment_ids,json_extract(payload_json,'$.page_count') AS page_count FROM ai_tasks ORDER BY created_at DESC")]
+        tasks=[dict(r) for r in conn.execute("SELECT id,session_id,message,state,error,created_at,json_extract(payload_json,'$.attachment_ids') AS attachment_ids,json_extract(payload_json,'$.page_count') AS page_count FROM ai_tasks WHERE session_id IN (SELECT id FROM ai_sessions WHERE bank_id=?) ORDER BY created_at DESC",(bank_id,))]
         rows=conn.execute('''WITH snapshots AS (
             SELECT i.*, d.revision AS draft_revision,
                 COALESCE(json_extract(d.content_json,'$.form'),json_extract(c.result_json,'$.question'),'{}') AS form_json
@@ -162,16 +162,18 @@ def publish(manager,request_id,selection,task_id=None):
             if task_id and item['task_id']!=task_id:raise ReviewError('题目不属于本任务','publish_conflict',item_ids=[item['id']])
             if item['revision']!=selected['revision'] or item['review_stage']!='publish':raise ReviewError('题目已变化或尚未人工核对，请退回核对','review_required',issues=issues(item),item_ids=[item['id']])
             if not item['details']['allow_duplicate'] and manager._duplicates(item):raise ReviewError('发现新的重复内容，请重新核对','duplicate_conflict',item_ids=[item['id']])
+            bank=manager.store.session(manager.store.task(item['task_id'])['session_id'])['bank_id']
+            if item['form'].get('bank_id','system')!=bank:raise ReviewError('候选题不属于任务的题库','publish_conflict')
             prepared.append(item)
         # Duplicate peers across different tasks must also be acknowledged.
         from .agent import fingerprint
         for n,item in enumerate(prepared):
             for peer in prepared[:n]:
-                if fingerprint(peer['form'])==fingerprint(item['form']) and not (peer['details']['allow_duplicate'] and item['details']['allow_duplicate']):
+                if peer['form'].get('bank_id','system')==item['form'].get('bank_id','system') and fingerprint(peer['form'])==fingerprint(item['form']) and not (peer['details']['allow_duplicate'] and item['details']['allow_duplicate']):
                     raise ReviewError('所选不同任务包含重复题，请先核对','duplicate_conflict',item_ids=[peer['id'],item['id']])
         published=[];collections=set();task_counts={}
         for item in prepared:
-            form={**copy.deepcopy(item['form']),'position':len(manager.db._ids_for_point(conn,item['form']['collection_code'],item['form']['point_code']))+1,'verified':False}
+            form={**copy.deepcopy(item['form']),'position':len(manager.db._ids_for_point(conn,item['form']['collection_code'],item['form']['point_code'],bank_id=item['form'].get('bank_id','system')))+1,'verified':False}
             revision,question=manager.db.create_question(form,conn)
             closed={'catalog_revision':revision,'question':question,'as_new':False,'affected_collections':[question['collection_code']]}
             conn.execute('INSERT INTO closed_drafts VALUES(?,?,?)',(item['draft_id'],item['draft_revision'],encode(closed)))

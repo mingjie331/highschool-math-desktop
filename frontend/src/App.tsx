@@ -23,6 +23,9 @@ import { useDraft } from './useDraft'
 import { flushSync } from 'react-dom'
 import DesktopSettings from './DesktopSettings'
 import AIWorkbench from './AIWorkbench'
+import BankManager from './BankManager'
+import { agentApi } from './agentApi'
+import type { Bank, ExportScope } from './types'
 import { recognizeQuestion } from './pasteRecognition'
 import { defaultPosition, restoredPosition, samePoint, targetPoint } from './position'
 import type { PositionContext } from './position'
@@ -127,9 +130,10 @@ function Editor({
   onRefreshCatalog: () => Promise<Catalog>
 }) {
   const [form, setForm] = useState<DraftForm>(() =>
-    draft ? { ...structuredClone(draft.content.form), position: initial && draft.position_mode !== 'move'
+    draft ? { ...structuredClone(draft.content.form), bank_id:draft.bank_id||draft.content.form.bank_id||catalog.bank_id||'system', position: initial && draft.position_mode !== 'move'
       && samePoint(initial, draft.content.form.collection_code, draft.content.form.point_code) ? initial.position : draft.content.form.position } : initial
       ? {
+          bank_id:initial.bank_id||catalog.bank_id||'system',
           collection_code: initial.collection_code,
           point_code: initial.point_code,
           position: initial.position,
@@ -141,7 +145,7 @@ function Editor({
           sources: initial.sources,
           verified: initial.verified,
         }
-      : { ...EMPTY_PAYLOAD, collection_code: defaultCollection, point_code: pointList(catalog, defaultCollection)[0]?.code || '1.1',
+      : { ...EMPTY_PAYLOAD, bank_id:catalog.bank_id||'system', collection_code: defaultCollection, point_code: pointList(catalog, defaultCollection)[0]?.code || '1.1',
           position: (pointList(catalog, defaultCollection)[0]?.count || 0) + 1 },
   )
   const [sourceBase] = useState<QuestionSources>(() => draft?.content.form.sources || initial?.sources || {})
@@ -500,6 +504,14 @@ function Editor({
 }
 
 export default function App() {
+  const [bankId,setBankId]=useState(()=>localStorage.getItem('question-bank')||'system')
+  const bankRef=useRef(bankId);bankRef.current=bankId
+  const pendingFocus=useRef<{id:string;collection:string}|null>(null)
+  api.setBank(bankId);agentApi.setBank(bankId)
+  const [banks,setBanks]=useState<Bank[]>([]);const [bankOpen,setBankOpen]=useState(false);const [allBanks,setAllBanks]=useState(false)
+  const [exportScope,setExportScope]=useState<ExportScope>({kind:'semester'})
+  const scopeSignature=JSON.stringify(exportScope)
+
   const [catalog, setCatalog] = useState<Catalog | null>(null)
   const [question, setQuestion] = useState<Question | null>(null)
   const [selectedId, setSelectedId] = useState('')
@@ -514,7 +526,7 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [aiOpen, setAiOpen] = useState(false)
-  const [selectedCollection, setSelectedCollection] = useState('gaoyi-first')
+  const [selectedCollection, setSelectedCollection] = useState(()=>localStorage.getItem('question-semester')||'gaoyi-first')
   const collectionRef = useRef(selectedCollection)
   collectionRef.current = selectedCollection
   const [exportOpen, setExportOpen] = useState(false)
@@ -533,7 +545,7 @@ export default function App() {
   const loadSequence = useRef(0)
   const selectedRef = useRef(selectedId)
   selectedRef.current = selectedId
-  const ready = !!question && question.id === selectedId && question.collection_code === selectedCollection && !questionLoading && !actionBusy
+  const ready = !!question && question.id === selectedId && question.collection_code === selectedCollection && question.bank_id === bankId && !questionLoading && !actionBusy
   const poolIds = useMemo(() => new Set(pool?.items.map(item => item.id) || []), [pool])
   useEffect(() => {
     setCheckedPoolIds(new Set(poolIds))
@@ -541,14 +553,17 @@ export default function App() {
   }, [poolIds])
 
   useEffect(() => {
-    api.pool().then(setPool).catch(error => setNotice(error.message))
-    api.paperStatus().then(setPaperStatus).catch(error => setNotice(error.message))
-  }, [])
+    const requestBank=bankId;let cancelled=false
+    api.pool().then(value=>{if(!cancelled&&bankRef.current===requestBank)setPool(value)}).catch(error => setNotice(error.message))
+    api.paperStatus().then(value=>{if(!cancelled&&bankRef.current===requestBank)setPaperStatus(value)}).catch(error => setNotice(error.message))
+    return ()=>{cancelled=true}
+  }, [bankId])
   useEffect(() => {
     if (!poolOpen && paperStatus?.state !== 'pending' && paperStatus?.state !== 'building') return
-    const timer = window.setInterval(() => { api.paperStatus().then(setPaperStatus).catch(() => {}) }, 1800)
-    return () => window.clearInterval(timer)
-  }, [poolOpen, paperStatus?.state])
+    const requestBank=bankId;let cancelled=false
+    const timer = window.setInterval(() => { api.paperStatus().then(value=>{if(!cancelled&&bankRef.current===requestBank)setPaperStatus(value)}).catch(() => {}) }, 1800)
+    return () => {cancelled=true;window.clearInterval(timer)}
+  }, [poolOpen, paperStatus?.state, bankId])
 
   const togglePool = async (id: string) => {
     const wasChecked = poolIds.has(id)
@@ -588,10 +603,10 @@ export default function App() {
   }
   const paperFile = async (kind: 'question' | 'solution', action: 'open' | 'save') => {
     try {
-      if (window.desktop) await window.desktop.paperFile(kind, action)
+      if (window.desktop) await window.desktop.paperFile(kind, action,bankId)
       else {
         const link = document.createElement('a')
-        link.href = `/api/papers/files/${kind}`
+        link.href = `/api/papers/files/${kind}?bank_id=${encodeURIComponent(bankId)}`
         if (action === 'save') link.download = paperStatus?.files[kind] || '训练卷.pdf'
         else link.target = '_blank'
         link.click()
@@ -634,20 +649,22 @@ export default function App() {
     if (!search.trim()) { setSearchStatus(''); return }
     setSearchStatus('搜索中…')
     const timer = window.setTimeout(() => {
-      api.search(search, abort.signal).then(result => {
+      api.search(search, abort.signal, allBanks).then(result => {
         if (!abort.signal.aborted) { setSearchResults(result.items); setSearchStatus(`找到 ${result.total} 道题`) }
       }).catch(error => { if (!abort.signal.aborted) setSearchStatus(error.message) })
     }, 200)
     return () => { window.clearTimeout(timer); abort.abort() }
-  }, [search, catalog])
+  }, [search, catalog, allBanks, bankId])
 
   const loadCatalog = async (keepId = selectedRef.current, scope = collectionRef.current) => {
     const sequence = ++loadSequence.current
+    const requestBank=bankRef.current
     const data = await api.catalog()
-    if (sequence !== loadSequence.current) return data
+    if (sequence !== loadSequence.current || requestBank!==bankRef.current) return data
     setQuestionLoading(true)
     setQuestion(null)
     setCatalog(data)
+    void api.banks().then(value=>{if(requestBank===bankRef.current)setBanks(value)})
     const current = data.collections.find(collection => collection.code === (collectionRef.current === scope ? scope : collectionRef.current)) || data.collections[0]
     const exists = current?.topics.some((topic) => topic.points.some((point) => point.questions.some((q) => q.id === keepId)))
     const nextId = exists ? keepId : current?.topics.flatMap((t) => t.points).flatMap((p) => p.questions)[0]?.id || ''
@@ -662,10 +679,12 @@ export default function App() {
   }
 
   useEffect(() => {
-    loadCatalog('')
+    void api.banks().then(value=>{setBanks(value);if(!value.some(b=>b.id===bankRef.current))switchBank('system')})
+    const focus=pendingFocus.current;pendingFocus.current=null
+    loadCatalog(focus?.id||'',focus?.collection||collectionRef.current)
       .catch((error) => setNotice(error instanceof Error ? error.message : '题库加载失败'))
       .finally(() => setLoading(false))
-  }, [])
+  }, [bankId])
 
   useEffect(() => {
     const abort = new AbortController()
@@ -677,7 +696,7 @@ export default function App() {
     }).catch(error => { if (!abort.signal.aborted) setNotice(error.message) })
       .finally(() => { if (!abort.signal.aborted) setQuestionLoading(false) })
     return () => abort.abort()
-  }, [selectedId, catalog, selectedCollection])
+  }, [selectedId, catalog, selectedCollection, bankId])
 
   useEffect(() => {
     const abort = new AbortController()
@@ -687,7 +706,7 @@ export default function App() {
       if (fetching) return
       fetching = true
       try {
-        const status = await api.exportStatus(selectedCollection, abort.signal)
+        const status = await api.exportStatus(selectedCollection, abort.signal,exportScope)
         if (!abort.signal.aborted && status.collection_code === collectionRef.current) setExportStatus(status)
       } catch (error) { if (!abort.signal.aborted) setNotice(error instanceof Error ? error.message : '导出状态加载失败') }
       finally { fetching = false }
@@ -695,7 +714,7 @@ export default function App() {
     void refresh()
     const timer = window.setInterval(refresh, 2000)
     return () => { abort.abort(); window.clearInterval(timer) }
-  }, [selectedCollection, catalog])
+  }, [selectedCollection, catalog, bankId, scopeSignature])
 
   const selectedMeta = useMemo(() => {
     if (!catalog || !selectedId) return null
@@ -725,10 +744,18 @@ export default function App() {
     setTab('question')
   }
 
+  const switchBank=(id:string,focus?:{id:string;collection:string},savedNavigation=false)=>{
+    if((editing||aiOpen)&&!savedNavigation){setNotice('请先保存并关闭当前编辑窗口');return}
+    pendingFocus.current=focus||null;if(focus){collectionRef.current=focus.collection;setSelectedCollection(focus.collection)}
+    bankRef.current=id;api.setBank(id);agentApi.setBank(id);setBankId(id);localStorage.setItem('question-bank',id)
+    ++loadSequence.current;setSelectedId('');selectedRef.current='';setQuestion(null);setCatalog(null);setSearch('');setDrafts(null);setPool(null);setPaperStatus(null);setPoolSelected(new Set());setCheckedPoolIds(new Set());setExportScope({kind:'semester'});setExportStatus(null)
+  }
+
   const chooseCollection = (code: string) => {
     if (code === collectionRef.current) { setSearch(''); return }
     collectionRef.current = code
     setSelectedCollection(code)
+    localStorage.setItem('question-semester',code);setExportScope({kind:'semester'})
     setExportStatus(null)
     setSearch('')
     const collection = catalog?.collections.find(item => item.code === code)
@@ -771,42 +798,48 @@ export default function App() {
 
   const exportAll = async () => {
     const code = collectionRef.current
+    const requestBank=bankRef.current
     try {
-      const status = await api.exportAll(code)
-      if (collectionRef.current === code) setExportStatus(status)
+      const status = await api.exportAll(code,exportScope)
+      if (collectionRef.current === code && bankRef.current===requestBank) setExportStatus(status)
       setNotice('已提交当前集合导出任务，题目册和解析册使用同一份快照。')
     } catch (error) {
-      if (collectionRef.current === code) {
+      if (collectionRef.current === code && bankRef.current===requestBank) {
         setNotice(error instanceof Error ? error.message : '导出任务启动失败')
-        const status = await api.exportStatus(code).catch(() => null)
-        if (collectionRef.current === code) setExportStatus(status)
+        const status = await api.exportStatus(code,undefined,exportScope).catch(() => null)
+        if (collectionRef.current === code && bankRef.current===requestBank) setExportStatus(status)
       }
     }
   }
 
   const exportFile = async (kind: 'question' | 'solution', action: 'open' | 'save') => {
-    try { await window.desktop?.exportFile(kind, action, selectedCollection) }
+    try { await window.desktop?.exportFile(kind, action, selectedCollection, exportStatus?.key) }
     catch (error) { setNotice(error instanceof Error ? error.message : '文件操作失败') }
   }
 
   const exportControls = <>
-          <span className="eyebrow">集合导出</span>
+          <span className="eyebrow">题库导出 · {catalog?.bank_name}</span>
           <label className="export-collection-select">当前集合<select aria-label="当前集合" value={selectedCollection} onChange={e => chooseCollection(e.target.value)}>{collectionList(catalog).map(item => <option key={item.code} value={item.code}>{item.title}（{item.material}）</option>)}</select></label>
-          <button className="button primary export-panel-action" onClick={exportAll}>生成当前集合 PDF</button>
+          <label className="export-collection-select">导出范围<select aria-label="导出范围" value={exportScope.kind} onChange={e=>{const kind=e.target.value as ExportScope['kind'];setExportScope(kind==='topic'?{kind,topic_code:selectedMeta?.topic.code||catalog?.collections.find(c=>c.code===selectedCollection)?.topics[0]?.code}:kind==='point'?{kind,point_code:selectedMeta?.point.code||catalog?.collections.find(c=>c.code===selectedCollection)?.topics[0]?.points[0]?.code}:kind==='selected'?{kind,question_ids:[]}: {kind})}}><option value="semester">当前学期全部</option><option value="topic">单个专题</option><option value="point">单个考点</option><option value="selected">勾选题目</option></select></label>
+          {exportScope.kind==='topic'&&<select aria-label="导出专题" value={exportScope.topic_code} onChange={e=>setExportScope({kind:'topic',topic_code:e.target.value})}>{catalog?.collections.find(c=>c.code===selectedCollection)?.topics.map(t=><option key={t.code} value={t.code}>{t.title}</option>)}</select>}
+          {exportScope.kind==='point'&&<select aria-label="导出考点" value={exportScope.point_code} onChange={e=>setExportScope({kind:'point',point_code:e.target.value})}>{catalog?.collections.find(c=>c.code===selectedCollection)?.topics.flatMap(t=>t.points.map(p=><option key={p.code} value={p.code}>{p.title}</option>))}</select>}
+          {exportScope.kind==='selected'&&<div className="bank-question-list" style={{maxHeight:160}}>{catalog?.collections.find(c=>c.code===selectedCollection)?.topics.flatMap(t=>t.points.flatMap(p=>p.questions.map(q=><label key={q.id}><input type="checkbox" checked={exportScope.question_ids?.includes(q.id)||false} onChange={()=>setExportScope(old=>({...old,question_ids:old.question_ids?.includes(q.id)?old.question_ids.filter(id=>id!==q.id):[...(old.question_ids||[]),q.id]}))}/><span>{p.code} · 第{q.local_number}题</span></label>)))}</div>}
+          <p>{catalog?.bank_name} / {catalog?.collections.find(c=>c.code===selectedCollection)?.title} · 当前范围 {exportStatus?.current_count||0} 题</p>
+          <button className="button primary export-panel-action" disabled={exportScope.kind==='selected'&&!exportScope.question_ids?.length} onClick={exportAll}>生成当前集合 PDF</button>
           <h3>编译状态</h3>
           <div className={`status-card status-${exportStatus?.state || 'idle'}`}>
             {(exportStatus?.state === 'pending' || exportStatus?.state === 'building') ? <LoaderCircle className="spin" size={19} /> : <RefreshCw size={19} />}
             <div><b>{exportStatus?.message || '未知'}</b><small>当前 {catalog?.collections.find(item => item.code === selectedCollection)?.count || 0} 道题 · 已导出 {exportStatus?.count || 0} 道</small></div>
           </div>
           {exportStatus?.error && <div className="export-error">{exportStatus.error}</div>}
-          <p>每次只导出当前集合；集合内题号从 1 开始，其他集合不会被覆盖。</p>
+          <p>每次只导出当前题库的指定范围，题号从 1 开始，其他题库的结果不会被覆盖。</p>
           {exportStatus?.stale && <p className="stale-note">导出尚未生成或已过期，请导出当前集合更新。</p>}
           <div className="export-files">
           <button className="download-link" disabled={!exportStatus?.available} onClick={() => exportFile('question', 'open')}><FileText size={17} />打开题目册</button>
           <button className="download-link" disabled={!exportStatus?.available} onClick={() => exportFile('solution', 'open')}><BookOpen size={17} />打开解析册</button>
           <button className="download-link" disabled={!exportStatus?.available} onClick={() => exportFile('question', 'save')}>题目册另存为…</button>
           <button className="download-link" disabled={!exportStatus?.available} onClick={() => exportFile('solution', 'save')}>解析册另存为…</button>
-          <button className="download-link" onClick={() => window.desktop?.openFolder('output', selectedCollection)}>打开导出目录</button>
+          <button className="download-link" onClick={() => window.desktop?.openFolder('output', selectedCollection,exportStatus?.key)}>打开导出目录</button>
           </div>
   </>
 
@@ -816,8 +849,8 @@ export default function App() {
     <div className="app-shell">
       <header className="topbar">
         <button className="icon-button mobile-only" onClick={() => setSidebarOpen(true)}><Menu size={20} /></button>
-        <div className="brand"><span className="brand-mark">∑</span><div><b>高中数学题库</b><small>{catalog?.total || 0} 道题 · 五个集合</small></div></div>
-        <div className="search-box"><Search size={18} /><input placeholder="搜索题号、题型、题干或题源" value={search} onChange={(e) => setSearch(e.target.value)} /></div>
+        <div className="brand"><span className="brand-mark">∑</span><div><b>高中数学题库</b><small>{catalog?.bank_name} · {catalog?.total || 0} 道题</small></div></div>
+        <label className="check"><input type="checkbox" checked={allBanks} onChange={e=>setAllBanks(e.target.checked)}/>全部题库搜索</label><div className="search-box"><Search size={18} /><input placeholder="搜索题号、题型、题干或题源" value={search} onChange={(e) => setSearch(e.target.value)} /></div>
         <div className="toolbar-actions">
           <button className="button ghost" onClick={() => setSettingsOpen(true)}>设置</button>
           <button className="button ghost" disabled={!catalog} onClick={() => setAiOpen(true)}>AI 录题</button>
@@ -833,7 +866,8 @@ export default function App() {
 
       <main className="workspace">
         <aside className={`sidebar ${sidebarOpen ? 'open' : ''}`}>
-          <div className="sidebar-heading"><div><span className="eyebrow">题库集合</span><h2>五个集合</h2></div><button className="icon-button mobile-only" onClick={() => setSidebarOpen(false)}><X size={18} /></button></div>
+          <div className="bank-picker"><label>当前题库<select aria-label="当前题库" value={bankId} disabled={editing!==null||aiOpen||actionBusy||poolBusy} onChange={e=>switchBank(e.target.value)}>{banks.map(b=><option key={b.id} value={b.id}>{b.name}（{b.count||0}题）</option>)}</select></label><button className="button ghost compact" onClick={()=>setBankOpen(true)}>新建 / 管理题库</button></div>
+          <div className="sidebar-heading"><div><span className="eyebrow">题库集合</span><h2>选择学期</h2></div><button className="icon-button mobile-only" onClick={() => setSidebarOpen(false)}><X size={18} /></button></div>
           <nav className="collection-list" aria-label="题库集合">
             {collectionList(catalog).map(item => <button key={item.code} aria-current={item.code === selectedCollection ? 'true' : undefined}
               className={`collection-button ${item.code === selectedCollection ? 'active' : ''}`} onClick={() => chooseCollection(item.code)}>
@@ -842,8 +876,8 @@ export default function App() {
           </nav>
           <div className="tree">
             {search.trim() ? <div className="search-results"><p role="status">{searchStatus}</p>{searchResults.map(item =>
-              <div className="pool-row" key={item.id}><input type="checkbox" aria-label={`将搜索结果第 ${item.local_number} 题加入组卷区`} checked={checkedPoolIds.has(item.id)} disabled={poolBusy} onChange={() => togglePool(item.id)} /><button className={`search-result ${selectedId === item.id ? 'active' : ''}`} onClick={() => chooseQuestion(item.id, item.topic_code, item.point_code, item.collection_code)}>
-                <b>第 {item.local_number} 题 · {item.type_name}</b><small>{item.collection_title} / {item.topic_title} / {item.point_title}</small><span>{item.snippet}</span>
+              <div className="pool-row" key={item.id}><input type="checkbox" aria-label={`将搜索结果第 ${item.local_number} 题加入组卷区`} checked={checkedPoolIds.has(item.id)} disabled={poolBusy || item.bank_id!==bankId} onChange={() => togglePool(item.id)} /><button className={`search-result ${selectedId === item.id ? 'active' : ''}`} onClick={() => {if(item.bank_id && item.bank_id!==bankId){switchBank(item.bank_id,{id:item.id,collection:item.collection_code})}else chooseQuestion(item.id,item.topic_code,item.point_code,item.collection_code)}}>
+                <b>第 {item.local_number} 题 · {item.type_name}</b><small>{item.bank_name} / {item.collection_title} / {item.topic_title} / {item.point_title}</small><span>{item.snippet}</span>
               </button></div>)}</div> : catalog?.collections.find(collection => collection.code === selectedCollection)?.topics.map((topic) => {
               const topicOpen = openTopics.has(topic.code)
               return <div className="topic-node" key={topic.code}>
@@ -863,7 +897,7 @@ export default function App() {
                       <span>{point.title}</span><em>{point.count}</em>
                     </button>
                     {pointOpen && <div className="question-list">
-                      {filtered.map((item) => <div className="pool-row" key={item.id}><input type="checkbox" aria-label={`将第 ${item.local_number} 题加入组卷区`} checked={checkedPoolIds.has(item.id)} disabled={poolBusy} onChange={() => togglePool(item.id)} /><button className={`question-row ${selectedId === item.id ? 'active' : ''}`}
+                      {filtered.map((item) => <div className="pool-row" key={item.id}><input type="checkbox" aria-label={`将第 ${item.local_number} 题加入组卷区`} checked={checkedPoolIds.has(item.id)} disabled={poolBusy || item.bank_id!==bankId} onChange={() => togglePool(item.id)} /><button className={`question-row ${selectedId === item.id ? 'active' : ''}`}
                         onClick={() => chooseQuestion(item.id, topic.code, point.code)}>
                         <span className="number">{item.local_number}</span>
                         <span className={`type type-${item.type}`}>{item.type_name}</span>
@@ -880,9 +914,9 @@ export default function App() {
 
         <section className="content">
           {notice && <div className="notice"><CircleAlert size={17} /><span>{notice}</span><button onClick={() => setNotice('')}><X size={15} /></button></div>}
-          {question && question.id === selectedId && question.collection_code === selectedCollection && !questionLoading && selectedMeta ? <>
+          {question && question.id === selectedId && question.collection_code === selectedCollection && question.bank_id === bankId && !questionLoading && selectedMeta ? <>
             <div className="question-header">
-              <div><span className="breadcrumb">{catalog?.collections.find(item => item.code === selectedCollection)?.title} / {selectedMeta.topic.title} / {selectedMeta.point.title}</span><h1>第 {question.position} 题 <span className={`type type-${question.type}`}>{TYPE_LABELS[question.type]}</span></h1></div>
+              <div><span className="breadcrumb">{catalog?.bank_name} / {catalog?.collections.find(item => item.code === selectedCollection)?.title} / {selectedMeta.topic.title} / {selectedMeta.point.title}</span><h1>第 {question.position} 题 <span className={`type type-${question.type}`}>{TYPE_LABELS[question.type]}</span></h1></div>
               <div className="version">内部 ID：{question.legacy_uid || question.id.slice(0, 8)} · 版本 {question.revision}</div>
             </div>
             <div className="tabs">
@@ -894,13 +928,13 @@ export default function App() {
             <div className="viewer-card">
               {(tab === 'question' || tab === 'solution') && <PdfViewer title={tab === 'question' ? '题目预览' : '答案解析'}
                 src={`/api/questions/${question.id}/pdf?view=${tab}&revision=${question.revision}&catalog_revision=${catalog?.revision}`} />}
-              {tab === 'latex' && <div className="source-panels">
+              {tab === 'latex' && <div className="source-panels" tabIndex={0} aria-label="源码与题源滚动区">
                 <section><h3>题干</h3><pre>{question.question_tex}</pre></section>
                 {question.options.length > 0 && <section><h3>选项</h3><pre>{question.options.map((value, i) => `${String.fromCharCode(65 + i)}. ${value}`).join('\n')}</pre></section>}
                 <section><h3>答案</h3><pre>{question.answer_tex || '（答案写在解析中）'}</pre></section>
                 <section><h3>解析</h3><pre>{question.solution_tex}</pre></section>
               </div>}
-              {tab === 'source' && <div className="source-panels"><section><h3>题源信息</h3><div className="origin-list">{question.sources.origins?.length ? question.sources.origins.map((origin, index) => <div className="origin-item" key={`${origin.title}-${index}`}><b>{originText(origin)}</b></div>) : <p className="empty-origin">题源暂缺</p>}</div></section><section className="meta-grid"><span>考点</span><b>{question.point_code}</b><span>考点内题号</span><b>{question.position}</b><span>核验状态</span><b>{question.verified ? '已核验' : '待核验'}</b><span>更新时间</span><b>{question.updated_at}</b></section></div>}
+              {tab === 'source' && <div className="source-panels" tabIndex={0} aria-label="源码与题源滚动区"><section><h3>题源信息</h3><div className="origin-list">{question.sources.origins?.length ? question.sources.origins.map((origin, index) => <div className="origin-item" key={`${origin.title}-${index}`}><b>{originText(origin)}</b></div>) : <p className="empty-origin">题源暂缺</p>}</div></section><section className="meta-grid"><span>考点</span><b>{question.point_code}</b><span>考点内题号</span><b>{question.position}</b><span>核验状态</span><b>{question.verified ? '已核验' : '待核验'}</b><span>更新时间</span><b>{question.updated_at}</b></section></div>}
             </div>
           </> : <div className="welcome"><BookOpen size={48} /><h1>{questionLoading ? '正在加载题目…' : '选择一道题目'}</h1><p>从左侧依次展开专题和考点，然后点击题号查看 LaTeX 排版结果。</p></div>}
         </section>
@@ -909,6 +943,7 @@ export default function App() {
           {exportControls}
         </aside>
       </main>
+      {bankOpen && catalog && <BankManager banks={banks} catalog={catalog} onClose={()=>setBankOpen(false)} onChanged={async id=>{setBanks(await api.banks());if(id&&id!==bankId)switchBank(id);else await loadCatalog()}} />}
       {editing && catalog && <Editor key={editing.key} catalog={catalog} defaultCollection={selectedCollection} initial={editing.initial} draft={editing.draft} onClose={() => setEditing(null)} onSaved={saved}
         onRefreshCatalog={async () => { const refreshed = await api.catalog(); setCatalog(refreshed); return refreshed }} />}
       {exportOpen && <div className="editor-backdrop" role="dialog" aria-modal="true" aria-label="导出文件"><section className="utility-panel export-dialog"><button className="icon-button utility-close" aria-label="关闭导出文件" onClick={() => setExportOpen(false)}><X /></button>{exportControls}</section></div>}
@@ -928,7 +963,7 @@ export default function App() {
         <p>草稿不会进入正式题库或导出。共 {drafts.length} 份。</p>
         {drafts.map(draft => <article key={draft.id}><b>{draft.content.form.question_tex.trim().slice(0, 70) || '未命名草稿'}</b><small>{catalog?.collections.find(item => item.code === draft.content.form.collection_code)?.title} · {draft.source_question_id ? '修改已有题目' : '新建题目'} · {new Date(draft.updated_at).toLocaleString()}</small><div className="form-actions"><button className="button primary" onClick={() => openEditor(null, draft)}>继续编辑</button><button className="button ghost" onClick={() => discardFromList(draft)}>丢弃</button></div></article>)}
       </section></div>}
-      {aiOpen && catalog && <AIWorkbench catalog={catalog} onClose={() => setAiOpen(false)} onSettings={() => setSettingsOpen(true)} onPublished={async () => { await loadCatalog(); setNotice('AI 候选题已入库，相关集合导出已过期。') }} onOpenQuestion={async id => { const q = await api.question(id); const updated = await api.catalog(); setCatalog(updated); const collection = updated.collections.find(c => c.code === q.collection_code); const topic = collection?.topics.find(t => t.points.some(p => p.code === q.point_code)); chooseQuestion(id, topic?.code || '', q.point_code, q.collection_code); setAiOpen(false) }} />}
+      {aiOpen && catalog && <AIWorkbench catalog={catalog} onClose={() => setAiOpen(false)} onSettings={() => setSettingsOpen(true)} onPublished={async () => { await loadCatalog(); setNotice('AI 候选题已入库，相关集合导出已过期。') }} onOpenQuestion={async id => { const q = await api.question(id); if(q.bank_id&&q.bank_id!==bankRef.current){setAiOpen(false);switchBank(q.bank_id,{id:q.id,collection:q.collection_code},true);return} const updated = await api.catalog(); setCatalog(updated); const collection = updated.collections.find(c => c.code === q.collection_code); const topic = collection?.topics.find(t => t.points.some(p => p.code === q.point_code)); chooseQuestion(id, topic?.code || '', q.point_code, q.collection_code); setAiOpen(false) }} />}
       {settingsOpen && <DesktopSettings onClose={() => setSettingsOpen(false)} />}
     </div>
   )

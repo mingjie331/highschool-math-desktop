@@ -49,15 +49,16 @@ class AgentStore:
         self.db=db
         self.directory=db.path.parent/'agent'
 
-    def sessions(self):
+    def sessions(self,bank_id="system"):
         with closing(self.db.connect()) as conn:
-            return [dict(row) for row in conn.execute('SELECT * FROM ai_sessions ORDER BY updated_at DESC')]
+            return [dict(row) for row in conn.execute('SELECT * FROM ai_sessions WHERE bank_id=? ORDER BY updated_at DESC', (bank_id,))]
 
-    def create_session(self,title='图片录题'):
+    def create_session(self,title='图片录题',bank_id='system'):
         sid=str(uuid.uuid4());stamp=now()
         with self.db.transaction() as conn:
-            conn.execute('INSERT INTO ai_sessions VALUES(?,?,?,?)',(sid,title[:80],stamp,stamp))
-        return {'id':sid,'title':title[:80],'created_at':stamp,'updated_at':stamp}
+            self.db._require_bank(conn,bank_id)
+            conn.execute('INSERT INTO ai_sessions(id,title,created_at,updated_at,bank_id) VALUES(?,?,?,?,?)',(sid,title[:80],stamp,stamp,bank_id))
+        return {'id':sid,'bank_id':bank_id,'title':title[:80],'created_at':stamp,'updated_at':stamp}
 
     def session(self,sid,compact=False):
         with closing(self.db.connect()) as conn:

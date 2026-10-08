@@ -1,19 +1,76 @@
 {
   "format_version": 1,
-  "protected_directories": ["data", ".cache", "output", "logs"],
-  "source_directories": ["backend", "frontend", "desktop", "resources", "scripts", "tests", "docs"],
-  "source_files": ["package.json", "package-lock.json", "requirements.txt", "requirements-build.txt", "build.ps1", "README.md", "CONTRIBUTING.md", ".gitignore", ".gitattributes"],
-  "source_excluded": ["node_modules", ".venv", ".cache", ".local", "runtime", "release", "build", "__pycache__", "test-results", "dist", "licenses", "测试题目", "data", "output", "logs"],
-  "source_excluded_paths": ["frontend/public/pdfjs", "docs/validation"],
+  "protected_directories": [
+    "data",
+    ".cache",
+    "output",
+    "logs"
+  ],
+  "source_directories": [
+    "backend",
+    "frontend",
+    "desktop",
+    "resources",
+    "scripts",
+    "tests",
+    "docs"
+  ],
+  "source_files": [
+    "package.json",
+    "package-lock.json",
+    "requirements.txt",
+    "requirements-build.txt",
+    "build.ps1",
+    "README.md",
+    "CONTRIBUTING.md",
+    ".gitignore",
+    ".gitattributes"
+  ],
+  "source_excluded": [
+    "node_modules",
+    ".venv",
+    ".cache",
+    ".local",
+    "runtime",
+    "release",
+    "build",
+    "__pycache__",
+    "test-results",
+    "dist",
+    "licenses",
+    "测试题目",
+    "data",
+    "output",
+    "logs"
+  ],
+  "source_excluded_paths": [
+    "frontend/public/pdfjs",
+    "docs/validation"
+  ],
   "documents": [
-    {"source": "docs/使用说明.md", "target": "docs/使用说明.md"},
-    {"source": "docs/开发交接.md", "target": "docs/开发交接.md"},
-    {"source": "docs/第三方组件说明.md", "target": "docs/第三方组件说明.md"},
-    {"source": "docs/目录与更新.md", "target": "docs/目录与更新.md"}
+    {
+      "source": "docs/使用说明.md",
+      "target": "docs/使用说明.md"
+    },
+    {
+      "source": "docs/开发交接.md",
+      "target": "docs/开发交接.md"
+    },
+    {
+      "source": "docs/第三方组件说明.md",
+      "target": "docs/第三方组件说明.md"
+    },
+    {
+      "source": "docs/目录与更新.md",
+      "target": "docs/目录与更新.md"
+    }
   ],
   "validation_directory": "docs/validation/{version}",
-  "runtime_tools": ["update_app.ps1"],
+  "runtime_tools": [
+    "update_app.ps1"
+  ],
   "seed_sha256": "46079ba90cd104902d8051bb7835504ec975a35159a658e8449cadcafa0f81c5",
   "seed_question_count": 627,
-  "seed_asset_count": 87
+  "seed_asset_count": 87,
+  "schema_version": 9
 }

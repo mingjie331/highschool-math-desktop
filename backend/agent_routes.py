@@ -7,7 +7,9 @@ from pydantic import BaseModel,Field
 from .agent import AgentManager
 from .agent_models import Region
 
-class NewSession(BaseModel):title:str=Field(default='图片录题',max_length=80)
+class NewSession(BaseModel):
+    bank_id:str="system"
+    title:str=Field(default='图片录题',max_length=80)
 class Credentials(BaseModel):
     api_key:str=Field(max_length=512)
     prices:dict[str,float]|None=None
@@ -66,8 +68,8 @@ def agent_router(manager:AgentManager,error_mapper,exports):
 
     @router.get('/workbench')
     def workbench(task_id:uuid.UUID|None=None,source:str|None=None,review_stage:Literal['review','publish','processing','published','skipped']|None=None,
-                  offset:int=Query(default=0,ge=0),limit:int=Query(default=100,ge=1,le=200)):
-        return run(manager.workbench,task_id=str(task_id) if task_id else None,source=source,review_stage=review_stage,offset=offset,limit=limit)
+                  offset:int=Query(default=0,ge=0),limit:int=Query(default=100,ge=1,le=200),bank_id:str="system"):
+        return run(manager.workbench,task_id=str(task_id) if task_id else None,source=source,review_stage=review_stage,offset=offset,limit=limit,bank_id=bank_id)
     @router.post('/publish')
     def publish_batch(payload:PublishRequest):
         result=run(manager.publish_batch,str(payload.request_id),[{'id':str(i.id),'revision':i.revision} for i in payload.items]);exports.invalidate(*result['affected_collections']);return result
@@ -90,9 +92,9 @@ def agent_router(manager:AgentManager,error_mapper,exports):
         try:return await manager.provider.test()
         except Exception as exc:raise error_mapper(exc) from exc
     @router.get('/sessions')
-    def sessions():return run(manager.sessions)
+    def sessions(bank_id:str="system"):return run(manager.sessions,bank_id)
     @router.post('/sessions',status_code=201)
-    def create(payload:NewSession):return run(manager.create_session,payload.title)
+    def create(payload:NewSession):return run(manager.create_session,payload.title,payload.bank_id)
     @router.get('/sessions/{sid}')
     def session(sid:uuid.UUID,compact:bool=False):return run(manager.store.session,str(sid),compact)
     @router.post('/sessions/{sid}/attachments',status_code=201)

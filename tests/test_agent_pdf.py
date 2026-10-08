@@ -72,7 +72,11 @@ class ImportRepairTests(IsolatedCase):
         self.manager.create_task(self.session['id'],{'attachment_ids':[p['id'] for p in document['pages']]})
         with self.assertRaises(ValueError):self.manager.create_task(self.session['id'],{'attachment_ids':[self.image['id'],*[p['id'] for p in document['pages']]]})
         before=len(self.manager.get_session(self.session['id'])['documents'])
-        with self.assertRaises(ValueError):self.manager.attach(self.session['id'],'超限.pdf',self.pdf(21))
+        for pages in [21,35]:
+            document=self.manager.attach(self.session['id'],f'{pages}页.pdf',self.pdf(pages))
+            self.assertEqual(document['page_count'],pages)
+        before=len(self.manager.get_session(self.session['id'])['documents'])
+        with self.assertRaises(ValueError):self.manager.attach(self.session['id'],'超限.pdf',self.pdf(36))
         self.assertEqual(len(self.manager.get_session(self.session['id'])['documents']),before)
 
     def test_invalid_pdf_and_size_fail_without_residual_files(self):

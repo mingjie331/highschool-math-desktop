@@ -10,7 +10,7 @@ from .assets import validate_upload
 from .agent_store import now
 
 PDFIUM_LOCK=threading.RLock()
-MAX_PAGES=20
+MAX_PAGES=35
 MAX_PIXELS=20_000_000
 
 
@@ -19,7 +19,7 @@ def ingest_pdf(manager,sid,filename,content):
     validate_upload(content,'.pdf')
     from pypdf import PdfReader
     count=len(PdfReader(io.BytesIO(content),strict=True).pages)
-    if not 1<=count<=MAX_PAGES:raise ValueError('AI 录题 PDF 须包含 1 至 20 页')
+    if not 1<=count<=MAX_PAGES:raise ValueError('AI 录题 PDF 须包含 1 至 35 页；每批识别最多选择 20 页')
     did=str(uuid.uuid4());relative='documents/'+did+'.pdf'
     original=manager.store.directory/relative
     created=[];rows=[]

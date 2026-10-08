@@ -110,7 +110,19 @@ async function start() {
   }
 }
 
-function currentExport(kind, collectionCode = 'gaoyi-first') {
+function currentExport(kind, collectionCode = 'gaoyi-first', exportKey) {
+  if (exportKey) {
+    if (!/^[0-9a-f]{32}$/.test(exportKey)) throw new Error('导出标识无效')
+    const root=path.join(home,'output','banks',exportKey)
+    const generation=JSON.parse(fs.readFileSync(path.join(root,'current.json'),'utf8')).generation
+    if(!/^book-[0-9a-f]{32}$/.test(generation))throw new Error('导出版本无效')
+    const folder=path.join(root,'versions',generation)
+    const manifest=JSON.parse(fs.readFileSync(path.join(folder,'export_manifest.json'),'utf8'))
+    const filename=manifest.files?.[kind]
+    if(manifest.key!==exportKey || !['question','solution'].includes(kind) || typeof filename!=='string' || path.basename(filename)!==filename)throw new Error('导出文件无效')
+    return path.join(folder,filename)
+  }
+
   const namesByCollection = {
     'gaoyi-first': { question: '高一上学期数学难题整理_题目册.pdf', solution: '高一上学期数学难题整理_答案解析册.pdf' },
     'gaoyi-second': { question: '高一下学期数学难题整理_题目册.pdf', solution: '高一下学期数学难题整理_答案解析册.pdf' },
@@ -130,12 +142,14 @@ function currentExport(kind, collectionCode = 'gaoyi-first') {
   return file
 }
 
-function currentPaper(kind) {
+function currentPaper(kind, bankId='system') {
+  if(bankId!=='system'&&!/^[0-9a-f-]{36}$/.test(bankId))throw new Error('题库标识无效')
+  const paperRoot=bankId==='system'?path.join(home,'output','papers'):path.join(home,'output','papers','banks',bankId)
   if (!['question', 'solution'].includes(kind)) throw new Error('未知训练卷类型')
-  const pointer = JSON.parse(fs.readFileSync(path.join(home, 'output', 'papers', 'current.json'), 'utf8'))
+  const pointer = JSON.parse(fs.readFileSync(path.join(paperRoot, 'current.json'), 'utf8'))
   if (typeof pointer.generation !== 'string' || !/^paper-[a-f0-9]{32}$/.test(pointer.generation)) throw new Error('训练卷目录记录无效')
-  const folder = path.join(home, 'output', 'papers', 'versions', pointer.generation)
-  const base = fs.realpathSync(path.join(home, 'output', 'papers', 'versions'))
+  const folder = path.join(paperRoot, 'versions', pointer.generation)
+  const base = fs.realpathSync(path.join(paperRoot, 'versions'))
   if (!fs.realpathSync(folder).startsWith(base + path.sep)) throw new Error('训练卷目录越界')
   const manifest = JSON.parse(fs.readFileSync(path.join(folder, 'paper_manifest.json'), 'utf8'))
   if (manifest.generation !== pointer.generation) throw new Error('训练卷版本不匹配')
@@ -169,8 +183,8 @@ function registerHandlers() {
     const selection = await dialog.showOpenDialog(window, { title: '选择 xelatex.exe', properties: ['openFile'], filters: [{ name: 'XeLaTeX', extensions: ['exe'] }] })
     return selection.canceled ? null : selection.filePaths[0]
   })
-  handle('desktop:export-file', async (kind, action, collectionCode) => {
-    const file = currentExport(kind, collectionCode)
+  handle('desktop:export-file', async (kind, action, collectionCode, exportKey) => {
+    const file = currentExport(kind, collectionCode, exportKey)
     if (action === 'open') {
       const error = await shell.openPath(file)
       if (error) throw new Error(error)
@@ -182,8 +196,8 @@ function registerHandlers() {
     if (path.resolve(selected.filePath) !== path.resolve(file)) await fs.promises.copyFile(file, selected.filePath)
     return true
   })
-  handle('desktop:paper-file', async (kind, action) => {
-    const file = currentPaper(kind)
+  handle('desktop:paper-file', async (kind, action, bankId) => {
+    const file = currentPaper(kind,bankId)
     if (action === 'open') {
       const error = await shell.openPath(file)
       if (error) throw new Error(error)
@@ -195,14 +209,15 @@ function registerHandlers() {
     if (path.resolve(selected.filePath) !== path.resolve(file)) await fs.promises.copyFile(file, selected.filePath)
     return true
   })
-  handle('desktop:open-folder', async (kind, collectionCode = 'gaoyi-first') => {
+  handle('desktop:open-folder', async (kind, collectionCode = 'gaoyi-first', exportKey) => {
     if (!['output', 'papers', 'logs', 'data'].includes(kind)) throw new Error('未知目录')
     let directory = path.join(home, kind)
+    if(kind==='output' && exportKey) directory=path.dirname(currentExport('question',collectionCode,exportKey))
     if (kind === 'papers') {
       directory = path.join(home, 'output', 'papers', 'versions')
       try { directory = path.dirname(currentPaper('question')) } catch {}
     }
-    if (kind === 'output') {
+    if (kind === 'output' && !exportKey) {
       if (!['gaoyi-first', 'gaoyi-second', 'gaokao-first', 'gaokao-second', 'misc'].includes(collectionCode)) throw new Error('未知题库集合')
       directory = path.join(home, 'output', 'versions', collectionCode)
       try { directory = path.dirname(currentExport('question', collectionCode)) } catch {}

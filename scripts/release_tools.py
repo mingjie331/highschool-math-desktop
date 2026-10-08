@@ -34,7 +34,7 @@ def build_windows():
         relative=file.relative_to(APP)
         if relative.parts[0].lower() in CONFIG['protected_directories'] or file.name.endswith('.credentials.enc'):raise ValueError('Personal data in build application')
         files.append({'path':relative.as_posix(),'bytes':file.stat().st_size,'sha256':sha(file)})
-    write_json(APP/'app-files.json',{'format_version':1,'version':VERSION,'schema':8,'product':PRODUCT,'files':files})
+    write_json(APP/'app-files.json',{'format_version':1,'version':VERSION,'schema':CONFIG.get('schema_version',8),'product':PRODUCT,'files':files})
     target=STAGE/f'{PRODUCT}-{VERSION}-Windows-x64.zip'
     with zipfile.ZipFile(target,'w',compression=zipfile.ZIP_DEFLATED,compresslevel=6) as archive:
         for file in sorted(APP.rglob('*')):
@@ -60,10 +60,10 @@ def stage_manifests():
     windows=STAGE/f'{PRODUCT}-{VERSION}-Windows-x64.zip';source=STAGE/f'{PRODUCT}-{VERSION}-源码.zip'
     w,s=metadata(windows),metadata(source)
     write_json(STAGE/f'checksums-{VERSION}.json',{'filename':w['filename'],'filename_sha256':w['sha256'],'bytes':w['bytes'],'source':s})
-    write_json(STAGE/'release.json',{'format_version':1,'version':VERSION,'schema':8,'artifacts':{'windows':w,'source':s},
+    write_json(STAGE/'release.json',{'format_version':1,'version':VERSION,'schema':CONFIG.get('schema_version',8),'artifacts':{'windows':w,'source':s},
           'program_manifest':'高中数学题库/app-files.json','validation':CONFIG['validation_directory'].replace('{version}',VERSION),
           'seed_sha256':CONFIG['seed_sha256'],'protected_directories':CONFIG['protected_directories']})
-    (STAGE/'发行说明.md').write_text(f'# 高中数学题库 {VERSION}\n\n固定使用目录、文档归位、不可覆盖发行与本地更新。schema 8；识别模型、提示词及数学内容保持。\n\n更新请保持 Windows ZIP、release.json 和校验清单位于同一目录，双击固定安装目录的“本地更新”。\n',encoding='utf-8')
+    (STAGE/'发行说明.md').write_text(f'# 高中数学题库 {VERSION}\n\n固定使用目录、文档归位、不可覆盖发行与本地更新。schema 9；新增独立题库、分范围导出、源码滚动和 PDF 35 页导入。\n\n更新请保持 Windows ZIP、release.json 和校验清单位于同一目录，双击固定安装目录的“本地更新”。\n',encoding='utf-8')
 
 def verify(directory):
     directory=Path(directory);release=json.loads((directory/'release.json').read_text('utf-8'))

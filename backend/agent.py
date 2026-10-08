@@ -53,8 +53,8 @@ class AgentManager:
                 for signal in self._cancel.values():signal.set()
                 for job in self._compile_jobs.values():latex_service.compiler.cancel_job(job)
         self.provider.configure(key,prices)
-    def create_session(self,title='图片录题'):return self.store.create_session(title)
-    def sessions(self):return self.store.sessions()
+    def create_session(self,title='图片录题',bank_id='system'):return self.store.create_session(title,bank_id)
+    def sessions(self,bank_id="system"):return self.store.sessions(bank_id)
     def get_session(self,sid):return self.store.session(sid)
 
     def start(self):
@@ -119,7 +119,7 @@ class AgentManager:
             self._check_regions({'payload':{'attachment_ids':ids}},payload['input_regions'])
             if {region['image_id'] for region in payload['input_regions']}!=set(ids):raise ValueError('每张所选图片至少需要一个识别区域')
         tid=str(uuid.uuid4());stamp=now()
-        content={**payload,'page_count':len(ids),'instruction':str(payload.get('instruction','提取题目，补充缺失答案解析并分类'))[:8000],
+        content={**payload,'bank_id':self.store.session(sid)['bank_id'],'page_count':len(ids),'instruction':str(payload.get('instruction','提取题目，补充缺失答案解析并分类'))[:8000],
                  'source_title':str(payload.get('source_title',''))[:1000], 'reference_prices':dict(self.provider.status()['prices'])}
         with self.db.transaction() as conn:
             conn.execute('INSERT INTO ai_tasks(id,session_id,state,payload_json,message,created_at,updated_at) VALUES(?,?,?,?,?,?,?)',
@@ -361,6 +361,8 @@ class AgentManager:
 
     @staticmethod
     def _item_hash(form,details):
+        form=dict(form)
+        if form.get("bank_id")=="system":form.pop("bank_id",None)
         resources={}
         for ref in image_references(form):
             try:resources[ref]=hashlib.sha256(asset_path(catalog.DATA_DIR,ref).read_bytes()).hexdigest()
@@ -390,6 +392,7 @@ class AgentManager:
         ids=[]
         for offset,candidate in enumerate(candidates,1):
             iid=str(uuid.uuid4());draft_id=str(uuid.uuid4());form,details=self._materialize(task,candidate,iid)
+            form["bank_id"]=task["payload"].get("bank_id") or self.store.session(task["session_id"])["bank_id"]
             self.db.save_draft(draft_id,0,None,None,{'form':form,'source_rows':[{'title':row['title'],'originalNumber':str(row.get('original_number','')),'metadata':row} for row in form['sources']['origins']]})
             with self.db.transaction() as conn:
                 order=conn.execute('SELECT COALESCE(MAX(item_order),0)+1 FROM ai_items WHERE task_id=?',(tid,)).fetchone()[0]
@@ -401,7 +404,7 @@ class AgentManager:
     def _duplicates(self,item):
         needle=fingerprint(item['form']);matches=[]
         if len(needle)<5:return matches
-        for question in self.db.ordered_snapshot_all():
+        for question in self.db.ordered_snapshot_all(item["form"].get("bank_id","system")):
             other=fingerprint(question)
             exact=other==needle
             if exact or (len(other)>10 and difflib.SequenceMatcher(None,needle[:4000],other[:4000]).ratio()>=.92):
@@ -428,6 +431,7 @@ class AgentManager:
                 patch=changes['form']
                 allowed={'collection_code','point_code','type','question_tex','options','answer_tex','solution_tex'}
                 if not isinstance(patch,dict):raise ValueError('题目表单格式无效')
+                if patch.get('bank_id',form.get('bank_id','system'))!=form.get('bank_id','system'):raise ValueError('候选题不能改变任务题库')
                 # Clients may send a full form, but origin/provenance remain server-owned.
                 for key in allowed:
                     if key in patch:form[key]=patch[key]
@@ -506,7 +510,7 @@ class AgentManager:
         state='ready';validated=None;compiled=False
         try:
             validate_agent_tex(item['form'],set(details['allowed_assets']))
-            if not self.db.point_exists(item['form']['point_code'],item['form']['collection_code']):raise ValueError('分类不在现有集合和考点中，请选择有效分类')
+            if not self.db.point_exists(item['form']['point_code'],item['form']['collection_code'],item['form'].get('bank_id','system')):raise ValueError('分类不在现有集合和考点中，请选择有效分类')
             latex_service.validate_question(item['form'])
             missing=question_parts(item['form']['question_tex'])-question_parts(item['form']['solution_tex'])
             if item['form']['type']=='long' and missing:raise ValueError('解析尚未覆盖题干子问：'+','.join(sorted(missing,key=int)))

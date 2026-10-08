@@ -171,7 +171,7 @@ def single_document(question: dict[str, Any], solutions: bool = False) -> str:
 
 
 def full_document(snapshot: list[dict[str, Any]], solutions: bool, collection_code: str = DEFAULT_COLLECTION,
-                  asset_root: Path | None = None) -> tuple[str, list[dict[str, Any]]]:
+                  asset_root: Path | None = None, include_empty: bool = True) -> tuple[str, list[dict[str, Any]]]:
     if collection_code not in COLLECTION_MAP:
         raise ValueError('题库集合不存在')
     allowed_points = {point for _, _, points in COLLECTION_MAP[collection_code][4] for point, _ in points}
@@ -209,9 +209,11 @@ def full_document(snapshot: list[dict[str, Any]], solutions: bool, collection_co
         r"\mainmatter",
     ]
     for _, topic_title, points in collection[4]:
+        if not include_empty and not any(by_point.get(code) for code,_ in points):continue
         lines.append(r"\chapter{" + topic_title + "}")
         lines.append(r"\markboth{" + topic_title + "}{}")
         for point_code, point_title in points:
+            if not include_empty and not by_point.get(point_code):continue
             lines.append(r"\section{" + point_title + "}")
             entries = by_point.get(point_code, [])
             if not entries:

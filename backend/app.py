@@ -28,6 +28,7 @@ from .agent_tex import validate_agent_tex
 
 
 class QuestionWrite(BaseModel):
+    bank_id: str = "system"
     collection_code: str | None = None
     point_code: str
     position: int = Field(ge=1)
@@ -62,6 +63,8 @@ class PreviewRequest(BaseModel):
 
 db = CatalogDB()
 exports = ExportManager(db)
+from .bank_exports import BankExports
+bank_exports = BankExports(db)
 papers = PaperManager(db)
 agent = AgentManager(db)
 
@@ -74,6 +77,7 @@ async def lifespan(_: FastAPI):
     agent.start()
     yield
     exports.stop()
+    bank_exports.stop()
     papers.stop()
     agent.stop()
     cancel_compilations()
@@ -150,12 +154,12 @@ def normalize_sources(value: Any) -> dict[str, Any]:
 def _validated_dict(model: QuestionWrite | QuestionUpdate, previous: dict | None = None) -> dict[str, Any]:
     data = model.model_dump(exclude={"revision"})
     if data.get('collection_code') is None:
-        data['collection_code'] = (previous['collection_code'] if previous and db.point_exists(data['point_code'], previous['collection_code']) else legacy_collection(data['point_code']))
+        data['collection_code'] = (previous['collection_code'] if previous and db.point_exists(data['point_code'], previous['collection_code'],data['bank_id']) else legacy_collection(data['point_code']))
     data["sources"] = normalize_sources(data.get("sources"))
     if data['sources'].get('ai_import'):validate_agent_tex(data,image_references(data))
     if data.get('collection_code') not in COLLECTION_MAP:
         raise ValueError('题库集合不存在')
-    if not db.point_exists(data["point_code"], data.get('collection_code', DEFAULT_COLLECTION)):
+    if not db.point_exists(data["point_code"], data.get('collection_code', DEFAULT_COLLECTION),data["bank_id"]):
         raise ValueError("考点不存在")
     validate_question(data)
     # Saving requires a real single-question compile. It prevents broken LaTeX entering SQLite.
@@ -204,11 +208,12 @@ def shutdown_desktop():
 
 
 @app.get("/api/catalog")
-def get_catalog() -> dict[str, Any]:
-    return db.catalog()
+def get_catalog(bank_id: str = "system") -> dict[str, Any]:
+    return db.catalog(bank_id)
 
 
 class DraftForm(BaseModel):
+    bank_id: str = "system"
     collection_code: str | None = None
     point_code: str = '1.1'
     position: str | int | float | None = 1
@@ -247,17 +252,17 @@ class DraftPublish(BaseModel):
 
 
 @app.get('/api/search')
-def search_questions(q: str = '', collection_code: str | None = None):
+def search_questions(q: str = '', collection_code: str | None = None, bank_id: str = "system", all_banks: bool = False):
     try:
-        items = db.search(q, collection_code)
+        items = db.search(q, collection_code, None if all_banks else bank_id)
         return {'items': items, 'total': len(items)}
     except Exception as exc:
         raise _http_error(exc) from exc
 
 
 @app.get('/api/drafts')
-def list_drafts():
-    return db.list_drafts()
+def list_drafts(bank_id: str = "system"):
+    return db.list_drafts(bank_id)
 
 
 @app.get('/api/drafts/{draft_id}')
@@ -431,54 +436,58 @@ async def upload_asset(file: UploadFile = File(...)) -> dict[str, Any]:
 
 
 class ExportRequest(BaseModel):
+    bank_id: str | None = None
+    scope: dict[str, Any] | None = None
     collection_code: str = DEFAULT_COLLECTION
 
 
 @app.post('/api/exports')
 def start_export(payload: ExportRequest = ExportRequest()):
     try:
-        return exports.schedule(payload.collection_code)
+        return bank_exports.schedule(payload.bank_id,payload.collection_code,payload.scope) if payload.bank_id is not None else exports.schedule(payload.collection_code)
     except Exception as exc:
         raise _http_error(exc) from exc
 
 
 @app.get('/api/exports/status')
-def export_status(collection_code: str = DEFAULT_COLLECTION):
+def export_status(collection_code: str = DEFAULT_COLLECTION, bank_id: str | None = None, scope: str | None = None):
     try:
-        return exports.status(collection_code)
+        return bank_exports.status(bank_id,collection_code,json.loads(scope) if scope else None) if bank_id is not None else exports.status(collection_code)
     except Exception as exc:
         raise _http_error(exc) from exc
 
 
 class PoolRemove(BaseModel):
+    bank_id: str = "system"
     question_ids: list[str] = Field(min_length=1)
 
 
 class PaperRequest(BaseModel):
+    bank_id: str = "system"
     mode: Literal['manual', 'random']
     question_ids: list[str] | None = None
     count: int | None = None
 
 
 @app.get('/api/pool')
-def get_pool():
-    return db.pool_state()
+def get_pool(bank_id: str = "system"):
+    return db.pool_state(bank_id)
 
 
 @app.put('/api/pool/{question_id}')
-def add_to_pool(question_id: str):
+def add_to_pool(question_id: str, bank_id: str = "system"):
     try:
-        db.pool_add(question_id)
-        return db.pool_state()
+        db.pool_add(question_id,bank_id)
+        return db.pool_state(bank_id)
     except Exception as exc:
         raise _http_error(exc) from exc
 
 
 @app.delete('/api/pool/{question_id}')
-def remove_from_pool(question_id: str):
+def remove_from_pool(question_id: str, bank_id: str = "system"):
     try:
-        db.pool_remove([question_id])
-        return db.pool_state()
+        db.pool_remove([question_id],bank_id)
+        return db.pool_state(bank_id)
     except Exception as exc:
         raise _http_error(exc) from exc
 
@@ -486,17 +495,18 @@ def remove_from_pool(question_id: str):
 @app.post('/api/pool/remove')
 def remove_from_pool_batch(payload: PoolRemove):
     try:
-        db.pool_remove(payload.question_ids)
-        return db.pool_state()
+        db.pool_remove(payload.question_ids,payload.bank_id)
+        bank_id=payload.bank_id
+        return db.pool_state(bank_id)
     except Exception as exc:
         raise _http_error(exc) from exc
 
 
 @app.post('/api/pool/undo')
-def undo_pool_remove():
+def undo_pool_remove(bank_id: str = "system"):
     try:
-        db.pool_undo()
-        return db.pool_state()
+        db.pool_undo(bank_id)
+        return db.pool_state(bank_id)
     except Exception as exc:
         raise _http_error(exc) from exc
 
@@ -504,27 +514,27 @@ def undo_pool_remove():
 @app.post('/api/papers')
 def create_paper(payload: PaperRequest):
     try:
-        return papers.schedule(payload.mode, payload.question_ids, payload.count)
+        return papers.schedule(payload.mode, payload.question_ids, payload.count,payload.bank_id)
     except Exception as exc:
         raise _http_error(exc) from exc
 
 
 @app.get('/api/papers/status')
-def paper_status():
-    return papers.status()
+def paper_status(bank_id: str = "system"):
+    return papers.status(bank_id)
 
 
 @app.get('/api/papers/latest')
-def latest_paper():
-    folder = active_paper_dir()
+def latest_paper(bank_id: str = "system"):
+    folder = active_paper_dir(bank_id)
     if not folder:
         raise HTTPException(404, '尚无成功生成的训练卷')
     return json.loads((folder / 'paper_manifest.json').read_text('utf-8'))
 
 
 @app.get('/api/papers/files/{kind}')
-def paper_file(kind: Literal['question', 'solution', 'manifest']):
-    folder = active_paper_dir()
+def paper_file(kind: Literal['question', 'solution', 'manifest'],bank_id: str = 'system'):
+    folder = active_paper_dir(bank_id)
     if not folder:
         raise HTTPException(404, '尚无成功生成的训练卷')
     manifest = json.loads((folder / 'paper_manifest.json').read_text('utf-8'))
@@ -546,6 +556,42 @@ def export_file(filename: str, collection_code: str = DEFAULT_COLLECTION):
         raise HTTPException(404, '尚无当前集合的成功导出文件')
     return FileResponse(folder / filename)
 
+
+class BankName(BaseModel):
+    name: str
+class TransferRequest(BaseModel):
+    source_bank_id: str = 'system'
+    target_bank_id: str
+    mode: Literal['move','copy']
+    selection: list[dict[str, Any]]
+    request_id: uuid.UUID
+
+@app.get('/api/banks')
+def banks():return db.list_banks()
+@app.post('/api/banks',status_code=201)
+def new_bank(payload: BankName):
+    try:return db.create_bank(payload.name)
+    except Exception as exc:raise _http_error(exc) from exc
+@app.patch('/api/banks/{bank_id}')
+def rename_bank(bank_id: str,payload: BankName):
+    try:return db.rename_bank(bank_id,payload.name)
+    except Exception as exc:raise _http_error(exc) from exc
+@app.delete('/api/banks/{bank_id}')
+def delete_bank(bank_id: str):
+    try:return db.delete_bank(bank_id)
+    except Exception as exc:raise _http_error(exc) from exc
+@app.post('/api/banks/transfer')
+def transfer_questions(payload: TransferRequest):
+    try:return db.transfer_questions(payload.selection,payload.target_bank_id,payload.mode,payload.source_bank_id,str(payload.request_id))
+    except Exception as exc:raise _http_error(exc) from exc
+@app.get('/api/bank-exports/{key}/files/{kind}')
+def scoped_export_file(key: str,kind: Literal['question','solution','manifest']):
+    try:folder=bank_exports.folder(key)
+    except ValueError as exc:raise _http_error(exc) from exc
+    if not folder:raise HTTPException(404,'尚无成功导出')
+    manifest=json.loads((folder/'export_manifest.json').read_text('utf-8'))
+    name='export_manifest.json' if kind=='manifest' else manifest['files'][kind]
+    return FileResponse(folder/name,filename=name)
 
 app.include_router(agent_router(agent,_http_error,exports))
 frontend_dist = FRONTEND

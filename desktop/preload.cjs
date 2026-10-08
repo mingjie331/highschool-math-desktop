@@ -16,8 +16,8 @@ contextBridge.exposeInMainWorld('desktop', {
   },
   confirmDiscard: message => ipcRenderer.invoke('desktop:confirm-discard', message),
   chooseLatex: () => ipcRenderer.invoke('desktop:choose-latex'),
-  exportFile: (kind, action, collectionCode) => ipcRenderer.invoke('desktop:export-file', kind, action, collectionCode),
-  paperFile: (kind, action) => ipcRenderer.invoke('desktop:paper-file', kind, action),
-  openFolder: (kind, collectionCode) => ipcRenderer.invoke('desktop:open-folder', kind, collectionCode),
+  exportFile: (kind, action, collectionCode, exportKey) => ipcRenderer.invoke('desktop:export-file', kind, action, collectionCode, exportKey),
+  paperFile: (kind, action, bankId) => ipcRenderer.invoke('desktop:paper-file', kind, action, bankId),
+  openFolder: (kind, collectionCode, exportKey) => ipcRenderer.invoke('desktop:open-folder', kind, collectionCode, exportKey),
   confirmDelete: message => ipcRenderer.invoke('desktop:confirm-delete', message),
 })

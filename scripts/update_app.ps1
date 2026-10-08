@@ -106,7 +106,7 @@ try {
         if (-not $entry) { throw 'Release has no program-file manifest' }
         $reader = [IO.StreamReader]::new($entry.Open(),[Text.Encoding]::UTF8)
         try { $manifestText=$reader.ReadToEnd();$manifest=$manifestText|ConvertFrom-Json } finally { $reader.Dispose() }
-        if ($manifest.version -ne $version -or $manifest.schema -ne 8) { throw 'Package version or schema mismatch' }
+        if ($manifest.version -ne $version -or $manifest.schema -notin @(8,9) -or $release.schema -ne $manifest.schema) { throw 'Package version or schema mismatch' }
         $wanted = @{}; $wanted['app-files.json']=$true
         foreach ($item in $manifest.files) {
             [void](Safe-Path $Target $item.path)

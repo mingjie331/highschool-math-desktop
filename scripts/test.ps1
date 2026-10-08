@@ -7,7 +7,7 @@ $TestPython = Join-Path (Get-Location) '.venv\Scripts\python.exe'
 if (-not (Test-Path -LiteralPath $TestPython)) { throw '请先按交接说明建立 .venv 并安装 requirements-build.txt，详情见 docs/开发交接.md' }
 & $TestPython -m unittest discover -s tests -p 'test_*.py' -v
 if ($LASTEXITCODE) { throw '后台回归测试失败' }
-node --experimental-strip-types --test tests/frontend.test.ts
+node --experimental-strip-types --test tests/frontend.test.ts tests/page_selection.test.ts
 if ($LASTEXITCODE) { throw '前端逻辑回归测试失败' }
 node --test tests/secrets.test.cjs tests/source_preferences.test.cjs
 if ($LASTEXITCODE) { throw '密钥存储回归测试失败' }
@@ -33,4 +33,6 @@ if ($Electron) {
     if ($LASTEXITCODE) { throw '原图滚动、列表与题源回归失败' }
     node tests/review_keyboard.e2e.cjs
     if ($LASTEXITCODE) { throw '核对工作台键盘回归失败' }
+    node tests/banks_140.e2e.cjs
+    if ($LASTEXITCODE) { throw '多题库、源码滚动与 PDF 选择回归失败' }
 }

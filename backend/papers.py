@@ -20,13 +20,19 @@ from .render_archive import staged_archive, resource_hashes
 PAPERS_DIR = EXPORT_DIR / 'papers'
 
 
-def active_paper_dir() -> Path | None:
+def paper_root(bank_id='system'):
+    if bank_id!='system':uuid.UUID(bank_id)
+    return PAPERS_DIR if bank_id=='system' else PAPERS_DIR/'banks'/bank_id
+
+
+def active_paper_dir(bank_id='system') -> Path | None:
+    root=paper_root(bank_id)
     try:
-        generation = json.loads((PAPERS_DIR / 'current.json').read_text('utf-8'))['generation']
+        generation = json.loads((root / 'current.json').read_text('utf-8'))['generation']
         if not isinstance(generation, str) or not re.fullmatch(r'paper-[a-f0-9]{32}', generation):
             return None
-        folder = PAPERS_DIR / 'versions' / generation
-        if not folder.resolve().is_relative_to((PAPERS_DIR / 'versions').resolve()):
+        folder = root / 'versions' / generation
+        if not folder.resolve().is_relative_to((root / 'versions').resolve()):
             return None
         manifest = json.loads((folder / 'paper_manifest.json').read_text('utf-8'))
         names = manifest['files']
@@ -61,7 +67,8 @@ def paper_document(snapshot: list[dict[str, Any]], solutions: bool, asset_root: 
 
 
 class PaperManager:
-    def __init__(self, db: CatalogDB) -> None:
+    def __init__(self, db: CatalogDB, bank_id='system') -> None:
+        self.bank_id=bank_id;self.children={}
         self.db = db
         self._lock = threading.RLock()
         self._thread: threading.Thread | None = None
@@ -69,13 +76,15 @@ class PaperManager:
         self._stopping = False
 
     def stop(self):
+        for child in self.children.values():child.stop()
         with self._lock:
             self._stopping = True
 
-    def status(self):
+    def status(self,bank_id=None):
+        if bank_id is not None and bank_id!=self.bank_id:return self.child(bank_id).status()
         with self._lock:
             state = dict(self._state)
-        folder = active_paper_dir()
+        folder = active_paper_dir(self.bank_id)
         state['available'] = folder is not None
         if folder:
             manifest = json.loads((folder / 'paper_manifest.json').read_text('utf-8'))
@@ -88,13 +97,20 @@ class PaperManager:
             state.update(generation=None, generated_at=None, count=0, files={})
         return state
 
-    def schedule(self, mode: str, question_ids=None, count=None):
+    def child(self,bank_id):
+        self.db.catalog(bank_id)
+        with self._lock:
+            if bank_id not in self.children:self.children[bank_id]=PaperManager(self.db,bank_id)
+            return self.children[bank_id]
+
+    def schedule(self, mode: str, question_ids=None, count=None,bank_id=None):
+        if bank_id is not None and bank_id!=self.bank_id:return self.child(bank_id).schedule(mode,question_ids,count)
         with self._lock:
             if self._stopping:
                 raise RuntimeError('应用正在退出，不能开始组卷')
             if self._thread and self._thread.is_alive():
                 raise RuntimeError('已有训练卷正在编译，请稍后重试')
-            snapshot, assets, preamble = self.db.paper_render_snapshot(mode, question_ids, count)
+            snapshot, assets, preamble = self.db.paper_render_snapshot(mode, question_ids, count,self.bank_id)
             self._state.update(state='pending', message='已固定题目快照，等待编译', error=None)
             self._thread = threading.Thread(target=self._run, args=(mode, snapshot, assets, preamble),
                                             name='training-paper-worker', daemon=True)
@@ -106,7 +122,7 @@ class PaperManager:
             self._state.update(state='building', message='正在编译训练卷题目卷和解析卷')
         try:
             generation = 'paper-' + uuid.uuid4().hex
-            folder = PAPERS_DIR / 'versions' / generation
+            folder = paper_root(self.bank_id) / 'versions' / generation
             preamble = preamble if preamble is not None else (RESOURCES/'preamble.tex').read_bytes()
             with staged_archive(folder, assets, preamble) as asset_root:
                 question_tex = paper_document(snapshot, False, asset_root)
@@ -118,7 +134,7 @@ class PaperManager:
                 question_pdf = compile_tex(question_tex, 'paper-questions', timeout=600, passes=2, resource_root=asset_root, priority=2)
                 solution_pdf = compile_tex(solution_tex, 'paper-solutions', timeout=600, passes=2, resource_root=asset_root, priority=2)
                 manifest = {'render_version':RENDER_VERSION,
-                    'format_version': 2, 'generation': generation, 'mode': mode,
+                    'bank_id':self.bank_id,'bank_name':self.db.catalog(self.bank_id)['bank_name'], 'format_version': 3, 'generation': generation, 'mode': mode,
                     'generated_at': stamp.isoformat(timespec='seconds'), 'count': len(snapshot), 'files': names,
                     'questions': [{
                         'global_number': number, 'id': q['id'], 'collection_code': q['collection_code'],
@@ -138,9 +154,9 @@ class PaperManager:
             with self._lock:
                 if self._stopping:
                     return
-                pointer = PAPERS_DIR / ('current-' + uuid.uuid4().hex + '.tmp')
+                pointer = paper_root(self.bank_id) / ('current-' + uuid.uuid4().hex + '.tmp')
                 pointer.write_text(json.dumps({'generation': generation}), 'utf-8')
-                os.replace(pointer, PAPERS_DIR / 'current.json')
+                os.replace(pointer, paper_root(self.bank_id) / 'current.json')
                 self._state.update(state='ready', message='训练双卷生成完成', error=None)
         except Exception as exc:
             with self._lock:
